@@ -4,6 +4,15 @@
   "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with text-protocol tool calling",
   "type": "module",
   "license": "MIT",
+  "author": "rabden",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rabden/pi-opencode-zen-custom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rabden/pi-opencode-zen-custom/issues"
+  },
+  "homepage": "https://github.com/rabden/pi-opencode-zen-custom#readme",
   "keywords": [
     "pi-package"
   ],

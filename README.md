@@ -19,10 +19,16 @@ From a checkout:
 pi install /path/to/pi-opencode-zen-custom
 ```
 
-From git once pushed:
+From git:
 
 ```bash
-pi install git:github.com/<owner>/pi-opencode-zen-custom
+pi install git:github.com/rabden/pi-opencode-zen-custom
+```
+
+From npm (once published):
+
+```bash
+pi install npm:pi-opencode-zen-custom
 ```
 
 Trial run without installing:
