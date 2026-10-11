@@ -62,6 +62,13 @@ const ZEN_USER_AGENT = "opencode/1.19.0 ai-sdk/provider-utils/4.0.40 runtime/bun
 // Fallback catalog used before the first successful /models refresh.
 const FALLBACK_MODEL_IDS = ["muse-spark-1.3-contributor-free", "exo-free", "space-bunny-free"];
 
+// Paid zen models 402 for anonymous/free-tier keys, so by default only the
+// free ("-free") models are listed. Set PI_ZEN_ALL_MODELS=1 to see the full
+// catalog (requires a funded key).
+function isListableModel(id: string): boolean {
+	return process.env.PI_ZEN_ALL_MODELS === "1" || id.includes("-free");
+}
+
 // =============================================================================
 // OpenCode SortableID (packages/schema/src/identifier.ts)
 // =============================================================================
@@ -497,7 +504,8 @@ export function createOpencodeZenCustomProvider(): Provider<"openai-responses"> 
 				return FALLBACK_MODEL_IDS.map(toChatModel);
 			}
 			const ids = await fetchLiveModelIds(context.credential.key, context.signal);
-			return (ids.length > 0 ? ids : FALLBACK_MODEL_IDS).map(toChatModel);
+			const listable = ids.filter(isListableModel);
+			return (listable.length > 0 ? listable : FALLBACK_MODEL_IDS).map(toChatModel);
 		},
 		api: openAIResponsesApi(),
 	});

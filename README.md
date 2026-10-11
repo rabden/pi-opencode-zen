@@ -52,6 +52,7 @@ pi
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENCODE_API_KEY` | — | `public` for free models, or a Zen key |
+| `PI_ZEN_ALL_MODELS` | off | `1` lists the full Zen catalog; by default only `-free` models are listed (paid ones 402 for anonymous keys) |
 | `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = pure chat (drops the tool loadout) |
 | `PI_ZEN_TOOLS` | — | `keep` disables all request shaping (raw passthrough) |
 | `PI_ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | force a base URL (testing) |
