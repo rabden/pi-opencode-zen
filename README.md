@@ -1,4 +1,4 @@
-# pi-opencode-zen-custom
+# pi-opencode-zen
 
 A [Pi](https://pi.dev) extension that exposes OpenCode Zen's models through
 the OpenAI Responses endpoint (`https://opencode.ai/zen/v1/responses`),
@@ -6,7 +6,7 @@ including the free (`-free`) models, with working tool calling.
 
 ## What you get
 
-- A `opencode-zen-custom` provider in `/model` with the live Zen catalog
+- A `opencode-zen` provider in `/model` with the live Zen catalog
   (refreshed from `GET /zen/v1/models`, static fallback offline).
 - Free-tier models usable from Pi, with Pi's real tools (read, bash, edit,
   write, ...) executing natively via a text-protocol adapter.
@@ -16,25 +16,25 @@ including the free (`-free`) models, with working tool calling.
 From a checkout:
 
 ```bash
-pi install /path/to/pi-opencode-zen-custom
+pi install /path/to/pi-opencode-zen
 ```
 
 From git:
 
 ```bash
-pi install git:github.com/rabden/pi-opencode-zen-custom
+pi install git:github.com/rabden/pi-opencode-zen
 ```
 
 From npm (once published):
 
 ```bash
-pi install npm:pi-opencode-zen-custom
+pi install npm:@rabden/pi-opencode-zen
 ```
 
 Trial run without installing:
 
 ```bash
-pi --extension /path/to/pi-opencode-zen-custom
+pi --extension /path/to/pi-opencode-zen
 ```
 
 ## Configure
@@ -42,10 +42,10 @@ pi --extension /path/to/pi-opencode-zen-custom
 ```bash
 export OPENCODE_API_KEY=public   # free models; or your real Zen API key
 pi
-# /model -> opencode-zen-custom/<id>   (e.g. muse-spark-1.3-contributor-free)
+# /model -> opencode-zen/<id>   (e.g. muse-spark-1.3-contributor-free)
 ```
 
-`/login opencode-zen-custom` also works to store a key in `auth.json`.
+`/login opencode-zen` also works to store a key in `auth.json`.
 
 ### Environment variables
 
@@ -106,7 +106,7 @@ transcript.
 - Free-tier quota is per IP + client class and managed by OpenCode
   (community reports ~200 requests/day). The endpoint also throttles
   under heavy probing; transient failures usually resolve on retry.
-- Sessions mixing zen-custom and other providers keep their own tool
+- Sessions mixing zen and other providers keep their own tool
   loadouts; switching restores the previous set (chat mode only).
 - This is an unofficial, personal-use integration. It is not affiliated
   with or endorsed by OpenCode, and it may stop working at any time as

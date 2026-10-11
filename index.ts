@@ -30,9 +30,9 @@
  *
  * Authenticate (either):
  *   export OPENCODE_API_KEY=public        # free models
- *   export OPENCODE_API_KEY=<zen key>     # or /login opencode-zen-custom
+ *   export OPENCODE_API_KEY=<zen key>     # or /login opencode-zen
  *
- * Then: /model -> opencode-zen-custom/<id>
+ * Then: /model -> opencode-zen/<id>
  *
  * Env:
  *   PI_ZEN_BASE_URL   force base URL (testing)
@@ -51,7 +51,7 @@ import {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ZEN_MARKER_PROMPT } from "./marker.ts";
 
-export const PROVIDER_ID = "opencode-zen-custom";
+export const PROVIDER_ID = "opencode-zen";
 const BASE_URL = process.env.PI_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1";
 const MODELS_URL = `${BASE_URL}/models`;
 

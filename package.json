@@ -1,5 +1,5 @@
 {
-  "name": "pi-opencode-zen-custom",
+  "name": "@rabden/pi-opencode-zen",
   "version": "0.1.0",
   "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with text-protocol tool calling",
   "type": "module",
@@ -7,12 +7,12 @@
   "author": "rabden",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rabden/pi-opencode-zen-custom.git"
+    "url": "git+https://github.com/rabden/pi-opencode-zen.git"
   },
   "bugs": {
-    "url": "https://github.com/rabden/pi-opencode-zen-custom/issues"
+    "url": "https://github.com/rabden/pi-opencode-zen/issues"
   },
-  "homepage": "https://github.com/rabden/pi-opencode-zen-custom#readme",
+  "homepage": "https://github.com/rabden/pi-opencode-zen#readme",
   "keywords": [
     "pi-package"
   ],
