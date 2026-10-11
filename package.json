@@ -1,0 +1,29 @@
+{
+  "name": "pi-opencode-zen-custom",
+  "version": "0.1.0",
+  "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with text-protocol tool calling",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "index.ts",
+    "marker.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "echo 'nothing to clean'",
+    "build": "echo 'nothing to build'",
+    "check": "echo 'nothing to check'"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
