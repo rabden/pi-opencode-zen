@@ -19,7 +19,8 @@
   "files": [
     "index.ts",
     "marker.ts",
-    "README.md"
+    "README.md",
+    "docs/zen-gate-notes.md"
   ],
   "scripts": {
     "clean": "echo 'nothing to clean'",

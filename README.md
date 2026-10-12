@@ -1,118 +1,99 @@
 # pi-opencode-zen
 
-A [Pi](https://pi.dev) extension that exposes OpenCode Zen's models through
-the OpenAI Responses endpoint (`https://opencode.ai/zen/v1/responses`),
-including the free (`-free`) models, with working tool calling.
+**Use OpenCode Zen's free models outside OpenCode — right inside [Pi](https://pi.dev).**
 
-## What you get
+OpenCode Zen gives away large daily quotas on strong models
+(`muse-spark-1.3-contributor-free`, `exo-free`, `space-bunny-free`, …),
+but the free tier is gated to the official OpenCode client: point any
+other tool at `https://opencode.ai/zen/v1` and you get
+`403 FreeTierError: "OpenCode's free tier can only be used from within
+OpenCode"`.
 
-- A `opencode-zen` provider in `/model` with the live Zen catalog
-  (refreshed from `GET /zen/v1/models`, static fallback offline).
-- Free-tier models usable from Pi, with Pi's real tools (read, bash, edit,
-  write, ...) executing natively via a text-protocol adapter.
+This extension reverse-engineers that gate and satisfies it from inside
+Pi — so the free models show up in `/model` like any other provider, and
+Pi's **real tools work** (read, bash, edit, write, multi-round loops),
+not just chat.
 
-## Install
+Full reverse-engineering write-up — every gate rule, what failed, what
+works, and how to re-capture artifacts when OpenCode rotates them:
+[docs/zen-gate-notes.md](docs/zen-gate-notes.md).
 
-From a checkout:
-
-```bash
-pi install /path/to/pi-opencode-zen
-```
-
-From git:
+## Quick start
 
 ```bash
 pi install git:github.com/rabden/pi-opencode-zen
-```
+# or once published: pi install npm:@rabden/pi-opencode-zen
 
-From npm (once published):
-
-```bash
-pi install npm:@rabden/pi-opencode-zen
-```
-
-Trial run without installing:
-
-```bash
-pi --extension /path/to/pi-opencode-zen
-```
-
-## Configure
-
-```bash
-export OPENCODE_API_KEY=public   # free models; or your real Zen API key
+export OPENCODE_API_KEY=public     # that's the whole auth for free models
 pi
-# /model -> opencode-zen/<id>   (e.g. muse-spark-1.3-contributor-free)
 ```
 
-`/login opencode-zen` also works to store a key in `auth.json`.
+```
+/model  →  opencode-zen/muse-spark-1.3-contributor-free
+```
 
-### Environment variables
+Try it:
+
+```bash
+OPENCODE_API_KEY=public pi --model opencode-zen/muse-spark-1.3-contributor-free \
+  --print "Run 'echo hello-from-zen' and reply with its output"
+```
+
+Verified working: plain chat, `read`/`bash`/`write` executing for real,
+and multi-round tasks (write a file, read it back, quote it) — all on
+free models, zero credentials beyond `Bearer public`.
+
+## How it works (short version)
+
+The gate validates the *content* of each request, not the transport:
+official client `User-Agent`, no SDK fingerprint headers, structurally
+valid OpenCode session ids, a verbatim OpenCode prompt as a leading
+developer message, no `tools` declarations, and (with a custom system
+prompt present) at most two further input items. See
+[docs/zen-gate-notes.md](docs/zen-gate-notes.md) for the rule table and
+the experiments behind it.
+
+The extension meets all of that in-process via one `globalThis.fetch`
+patch scoped to `opencode.ai`:
+
+- official UA, stripped `X-Stainless-*`, freshly minted OpenCode
+  SortableIDs (stable per Pi session for routing/cache affinity),
+- the required marker prompt injected as `input[0]`, defused by a
+  precedence preamble so Pi's instructions govern,
+- every request collapsed to `[developer, system, user(transcript)]`,
+- **tool calling as a text protocol**: the model emits fenced
+  ` ```tool {"name","arguments"} ` blocks; a `message_end` handler turns
+  them into real tool calls, so Pi executes actual tools and feeds
+  results back through the transcript. Parallel blocks run in parallel.
+
+## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENCODE_API_KEY` | — | `public` for free models, or a Zen key |
-| `PI_ZEN_ALL_MODELS` | off | `1` lists the full Zen catalog; by default only `-free` models are listed (paid ones 402 for anonymous keys) |
-| `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = pure chat (drops the tool loadout) |
+| `OPENCODE_API_KEY` | — | `public` for free models; a real Zen key also works |
+| `PI_ZEN_ALL_MODELS` | off | `1` lists the full (paid) Zen catalog; default lists `-free` models only |
+| `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = chat only (drops the tool loadout) |
 | `PI_ZEN_TOOLS` | — | `keep` disables all request shaping (raw passthrough) |
 | `PI_ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | force a base URL (testing) |
 | `PI_ZEN_DEBUG` | off | `1` dumps wire summaries to `/tmp/pi-zen-debug.json` |
 
-## How it works
+## Limits
 
-The extension registers the provider on Pi's `openai-responses`
-implementation and shapes traffic for the Zen gateway inside the Pi
-process via a single `globalThis.fetch` patch scoped to `opencode.ai`
-URLs:
+- The marker prompt and UA are pinned to OpenCode CLI 1.19.0. If Zen
+  rotates them, requests 403 until re-captured (procedure in the notes).
+- The marker's title-generator persona occasionally bleeds through;
+  the preamble suppresses it — retry the prompt if an answer looks
+  like a title.
+- Free-tier quota is per IP and managed by OpenCode (community reports
+  ~200 requests/day); the endpoint also throttles under rapid probing.
+- Sessions on this provider are best kept to fresh conversations; the
+  wire transcript grows every round.
 
-1. Strips OpenAI-SDK `X-Stainless-*` fingerprint headers and sets the
-   official CLI `User-Agent`.
-2. Rews `x-opencode-session(-id)` / `x-opencode-request` as
-   structurally valid OpenCode SortableIDs (stable per Pi session).
-3. Injects a captured OpenCode prompt as the leading developer message
-   (the gateway requires it verbatim) and defuses it with a precedence
-   preamble on Pi's own system message.
-4. Removes `tools` / `tool_choice` and any tool-typed history items, and
-   collapses the conversation into a single user transcript message so
-   every request fits the gateway's input shape budget.
+## Disclaimer
 
-Tool calling then runs as a text protocol: the system prompt teaches the
-model to emit fenced
-
-````
-```tool
-{"name": "read", "arguments": {"path": "/tmp/x"}}
-```
-````
-
-blocks; a `message_end` handler converts them into real `toolCall`
-blocks, so Pi's agent loop executes the actual tools (parallel batches
-and multi-round loops included) and feeds results back through the
-transcript.
-
-## Verified behaviors
-
-- plain chat (print mode)
-- `read` / `bash` / `write` tools executing for real
-- multi-round tasks (write then read back in one prompt)
-- every wire round is exactly `[developer, system, user]`, no `tools` key
-
-## Limits and caveats
-
-- The marker prompt (`marker.ts`) and UA string must stay byte-exact;
-  OpenCode rotating either breaks this until re-captured.
-- The marker persona occasionally bleeds through (title-flavored
-  answers); the preamble + transcript reminder suppress it — retry the
-  prompt if it recurs.
-- Free-tier quota is per IP + client class and managed by OpenCode
-  (community reports ~200 requests/day). The endpoint also throttles
-  under heavy probing; transient failures usually resolve on retry.
-- Sessions mixing zen and other providers keep their own tool
-  loadouts; switching restores the previous set (chat mode only).
-- This is an unofficial, personal-use integration. It is not affiliated
-  with or endorsed by OpenCode, and it may stop working at any time as
-  the service evolves. Review your obligations under OpenCode's terms
-  before use.
+Unofficial, not affiliated with OpenCode. Free-tier access outside the
+official client may conflict with OpenCode's terms — review them before
+use. This may break at any time as the service evolves.
 
 ## License
 
