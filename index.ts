@@ -252,6 +252,10 @@ function flattenHistory(input: unknown[]): unknown[] {
 	const conversation = systemIndex === 0 ? rest.slice(1) : rest;
 
 	const lines: string[] = [];
+	// Images from the most recent image-bearing user turn. Earlier turns'
+	// images are referenced in the transcript text only — the wire budget
+	// cannot carry unbounded base64 across rounds.
+	const images: { type: "input_image"; image_url: unknown }[] = [];
 	for (const item of conversation) {
 		if (typeof item !== "object" || item === null) continue;
 		const entry = item as {
@@ -290,7 +294,24 @@ function flattenHistory(input: unknown[]): unknown[] {
 			if (text.length > 0) lines.push(`[assistant] ${text}`);
 		} else if (entry.role === "user") {
 			const text = contentText(entry.content).trim();
-			if (text.length > 0) lines.push(`[user] ${text}`);
+			const entryImages = Array.isArray(entry.content)
+				? entry.content
+						.filter(
+							(block): block is { type: "input_image"; image_url: unknown } =>
+								typeof block === "object" &&
+								block !== null &&
+								(block as { type?: unknown }).type === "input_image",
+						)
+						.map((block) => ({ type: "input_image" as const, image_url: block.image_url }))
+				: [];
+			if (entryImages.length > 0) {
+				images.length = 0;
+				images.push(...entryImages);
+				if (text.length > 0) lines.push(`[user] ${text} (image attached)`);
+				else lines.push("[user] (image attached)");
+			} else if (text.length > 0) {
+				lines.push(`[user] ${text}`);
+			}
 		} else if (entry.role === "system" || entry.role === "developer") {
 			const text = contentText(entry.content).trim();
 			if (text.length > 0) lines.push(`[system] ${text}`);
@@ -302,7 +323,9 @@ function flattenHistory(input: unknown[]): unknown[] {
 	const transcript = `Conversation so far, oldest first. The most recent entry is the newest state — continue from it:\n${lines.join("\n")}${reminder}`;
 	const out: unknown[] = [marker];
 	if (system !== undefined) out.push(system);
-	out.push({ role: "user", content: [{ type: "input_text", text: transcript }] });
+	const userContent: unknown[] = [{ type: "input_text", text: transcript }];
+	if (images.length > 0) userContent.push(...images);
+	out.push({ role: "user", content: userContent });
 	return out;
 }
 
@@ -443,6 +466,10 @@ function installFetchPatch(): void {
 // Models
 // =============================================================================
 
+// Multimodal: muse-spark (and other frees) accept input_image blocks —
+// verified against the gateway. Set PI_ZEN_VISION=0 to declare text-only.
+const VISION_ENABLED = process.env.PI_ZEN_VISION !== "0";
+
 function toChatModel(id: string): Model<"openai-responses"> {
 	return {
 		id,
@@ -451,7 +478,7 @@ function toChatModel(id: string): Model<"openai-responses"> {
 		provider: PROVIDER_ID,
 		baseUrl: BASE_URL,
 		reasoning: true,
-		input: ["text"],
+		input: VISION_ENABLED ? ["text", "image"] : ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200000,
 		maxTokens: 16384,

@@ -40,8 +40,9 @@ OPENCODE_API_KEY=public pi --model opencode-zen/muse-spark-1.3-contributor-free 
 ```
 
 Verified working: plain chat, `read`/`bash`/`write` executing for real,
-and multi-round tasks (write a file, read it back, quote it) — all on
-free models, zero credentials beyond `Bearer public`.
+multi-round tasks (write a file, read it back, quote it), and **image
+input** (`@image.jpg` attachments on multimodal frees like muse-spark) —
+all on free models, zero credentials beyond `Bearer public`.
 
 ## How it works (short version)
 
@@ -72,6 +73,7 @@ patch scoped to `opencode.ai`:
 |---|---|---|
 | `OPENCODE_API_KEY` | — | `public` for free models; a real Zen key also works |
 | `PI_ZEN_ALL_MODELS` | off | `1` lists the full (paid) Zen catalog; default lists `-free` models only |
+| `PI_ZEN_VISION` | `1` | image input (`@file` attachments); `0` declares text-only models |
 | `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = chat only (drops the tool loadout) |
 | `PI_ZEN_TOOLS` | — | `keep` disables all request shaping (raw passthrough) |
 | `PI_ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | force a base URL (testing) |
@@ -86,6 +88,9 @@ patch scoped to `opencode.ai`:
   like a title.
 - Free-tier quota is per IP and managed by OpenCode (community reports
   ~200 requests/day); the endpoint also throttles under rapid probing.
+- Images from the most recent user turn are carried on the wire; earlier
+  turns' images degrade to `[image attached]` transcript markers, and
+  tool-result images (e.g. `read` on a PNG) arrive as text only.
 - Sessions on this provider are best kept to fresh conversations; the
   wire transcript grows every round.
 

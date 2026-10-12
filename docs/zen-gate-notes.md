@@ -72,6 +72,7 @@ chars   = hex(value >> ...48 bits).padStart(12) + 14 × random base62
 | 10 | With `[marker, custom system]` present, at most **2 further input items** | 4-item inputs pass (B4, C1, C3, C4); 5-item fail (B-series, C2) — regardless of roles |
 | 11 | Transport-agnostic — no TLS fingerprinting | official CLI passed through a Node/OpenSSL MITM; Node-direct with correct content 200s; curl/undici/Bun identical outcomes |
 | 12 | Extra junk headers harmless | `session_id`, `x-client-request-id`, `sec-fetch-mode`, `accept-language` → 200 (S3) |
+| 13 | `input_image` blocks pass and reach the model | user content `[input_text, input_image(data URI)]` in the 3-item shape → 200 with an accurate description of the actual image (verified 2026-10-12, 1024px JPEG ≈ 74 KB base64); content blocks do not count toward the 2-item budget |
 
 Enforcement/ops observations:
 
