@@ -20,17 +20,30 @@ works, and how to re-capture artifacts when OpenCode rotates them:
 
 ## Quick start
 
+Install from npm (recommended — versioned releases):
+
 ```bash
-pi install git:github.com/rabden/pi-opencode-zen
-# or once published: pi install npm:@rabden/pi-opencode-zen
+pi install npm:@rabden/pi-opencode-zen
 
 export OPENCODE_API_KEY=public     # that's the whole auth for free models
 pi
 ```
 
+Or track the repository directly (latest `main`, no releases needed):
+
+```bash
+pi install git:github.com/rabden/pi-opencode-zen
+```
+
+Pick a model:
+
 ```
 /model  →  opencode-zen/muse-spark-1.3-contributor-free
 ```
+
+A real key also works instead of `public`: `/login opencode-zen`, or
+`export OPENCODE_API_KEY=<zen key>` (needed for the paid catalog — see
+`PI_ZEN_ALL_MODELS` below).
 
 Try it:
 
