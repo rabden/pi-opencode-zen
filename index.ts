@@ -22,8 +22,11 @@
  * official UA, rewrites the session ids (mapping Pi's session to a
  * stable freshly-minted SortableID), and injects the captured marker
  * prompt as the leading developer message. Pi's real system prompt
- * follows, so agent behavior is preserved. All other hosts pass through
- * untouched.
+ * follows, so agent behavior is preserved. On the response side, the
+ * SSE stream is rewritten in-flight (stream.ts) so the model's fenced
+ * ```tool blocks arrive as native function_call events — tool calls
+ * render in Pi's UI exactly like a native-tools provider. All other
+ * hosts pass through untouched.
  *
  * Load during development:
  *   pi --extension /disk2/desktop/extensions-A/pi-opencode-zen
@@ -50,6 +53,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ZEN_MARKER_PROMPT } from "./marker.ts";
+import { mintToolCallIds, wrapZenSseResponse } from "./stream.ts";
 
 export const PROVIDER_ID = "opencode-zen";
 const BASE_URL = process.env.PI_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1";
@@ -124,10 +128,12 @@ interface ResponsesBody {
 //
 // The endpoint rejects any tools/tool_choice declaration and any
 // function_call/function_call_output history items, so tool calling runs
-// as a text protocol: the model emits fenced ```tool blocks, a
-// message_end handler converts them into real ToolCall blocks (Pi's agent
-// loop then executes them natively), and outgoing history is flattened to
-// plain role messages before the request leaves the process.
+// as a text protocol: the model emits fenced ```tool blocks, and the SSE
+// response stream is rewritten in-flight (stream.ts) into native
+// Responses function_call events — pi's agent loop and UI see real
+// toolCall blocks while the message streams, exactly like a provider
+// with native tool calling. A message_end handler remains as a fallback
+// for anything that slips through (it is a no-op on clean streams).
 // =============================================================================
 
 const TEXT_TOOLS_ENABLED = process.env.PI_ZEN_TEXT_TOOLS !== "0" && process.env.PI_ZEN_TOOLS !== "keep";
@@ -203,10 +209,10 @@ function extractToolBlocks(message: AssistantContentMessage): {
 						typeof parsed.arguments === "object" ||
 						typeof parsed.arguments === "string")
 				) {
-					counter += 1;
+					const ids = mintToolCallIds();
 					toolCalls.push({
 						type: "toolCall",
-						id: `call_zen_${counter}`,
+						id: ids.id,
 						name: parsed.name,
 						arguments:
 							typeof parsed.arguments === "object" && parsed.arguments !== null
@@ -375,7 +381,7 @@ function installFetchPatch(): void {
 	if (current.__zenPatched) return;
 	const base = current;
 
-	const patched = ((input: unknown, init?: RequestInit): Promise<Response> => {
+	const patched = (async (input: unknown, init?: RequestInit): Promise<Response> => {
 		const url =
 			typeof input === "string"
 				? input
@@ -413,7 +419,8 @@ function installFetchPatch(): void {
 				if (process.env.PI_ZEN_TOOLS !== "keep") {
 					// Free-tier gate: requests carrying any tools other than a
 					// byte-exact official tool set are rejected. Tools run via
-					// the text protocol instead (see extractToolBlocks).
+					// the text protocol instead (translated on the response
+					// stream — see stream.ts and extractToolBlocks).
 					delete (parsed as { tools?: unknown }).tools;
 					delete (parsed as { tool_choice?: unknown }).tool_choice;
 				}
@@ -456,7 +463,33 @@ function installFetchPatch(): void {
 			debugLog("body not a string", String(typeof body));
 		}
 
-		return base(input as RequestInfo | URL, { ...init, headers, body });
+		const response = await base(input as RequestInfo | URL, { ...init, headers, body });
+		// Response-side translation: rewrite the SSE stream so fenced ```tool
+		// blocks become native function_call events (stream.ts). Tool calls then
+		// render in Pi's UI exactly like a native-tools provider, and the fence
+		// text never streams into the chat as visible text.
+		if (
+			TEXT_TOOLS_ENABLED &&
+			response.ok &&
+			response.body !== null &&
+			(response.headers.get("content-type") ?? "").includes("text/event-stream") &&
+			url.includes("/responses")
+		) {
+			if (DEBUG) debugLog("wrapping SSE response for tool-call translation", url);
+			if (DEBUG) {
+				const rawPath = process.env.PI_ZEN_SSE_PATH ?? "/tmp/pi-zen-sse-upstream.sse";
+				let header = false;
+				return wrapZenSseResponse(response, (chunk) => {
+					if (!header) {
+						header = true;
+						void appendFile(rawPath, `\n===== upstream ${new Date().toISOString()} ${url}\n`);
+					}
+					void appendFile(rawPath, chunk);
+				});
+			}
+			return wrapZenSseResponse(response);
+		}
+		return response;
 	}) as PatchedFetch;
 	patched.__zenPatched = true;
 	globalThis.fetch = patched;
@@ -545,9 +578,9 @@ export default function (pi: ExtensionAPI): void {
 	// Free-tier gate: any non-official tool declaration is rejected, so tool
 	// calling runs through the text protocol while a zen model is active.
 	// - PI_ZEN_TEXT_TOOLS=1 (default): keep the loadout (descriptions reach
-	//   the model as prompt text) and synthesize real tool calls from
-	//   fenced ```tool blocks in message_end; the fetch patch strips the
-	//   wire declarations and flattens history.
+	//   the model as prompt text) and translate fenced ```tool blocks into
+	//   native tool calls on the response stream; the fetch patch strips
+	//   the wire declarations and flattens history.
 	// - PI_ZEN_TEXT_TOOLS=0: pure chat mode — drop the loadout entirely.
 	// - PI_ZEN_TOOLS=keep: developer escape hatch, requests will 403/400.
 	if (process.env.PI_ZEN_TOOLS !== "keep") {
@@ -571,6 +604,9 @@ export default function (pi: ExtensionAPI): void {
 			});
 		}
 
+		// Fallback for fences that reached the assistant message untranslated
+		// (the SSE rewrite in stream.ts normally converts them in-flight):
+		// synthesize the tool calls here so they still execute.
 		pi.on("message_end", (event) => {
 			if (!TEXT_TOOLS_ENABLED) return;
 			const message = event.message;

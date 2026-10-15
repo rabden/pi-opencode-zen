@@ -114,20 +114,45 @@ What this extension implements:
    "Yes, it is" with preamble vs "Sky color inquiry" without).
 3. Tool calling as a text protocol (rule 9 makes native tools
    impossible): the system prompt teaches fenced
-   ```` ```tool {"name","arguments"} ```` blocks; a `message_end`
-   handler converts them into real `toolCall` blocks in place (the
-   agent loop filters the same object reference — `agent-loop.ts`
-   streamOnce returns the message it emits), so Pi executes actual
-   tools, including parallel batches and multi-round loops. Results
-   flow back through the transcript (`[tool result: …]`), and every
-   request re-consolidates to the 3-item shape.
+   ```` ```tool {"name","arguments"} ```` blocks, and the SSE response
+   stream is rewritten in-flight (`stream.ts`, ported from zenshim's
+   stream translator): a fence-holdback state machine keeps candidate
+   fence text out of the visible deltas, harvested blocks are emitted
+   as native Responses `function_call` events, and unparseable blocks
+   are re-emitted as text for self-correction. Pi's stream processor
+   builds real `toolCall` blocks from those events — the agent loop
+   executes them natively (parallel batches, multi-round loops), and
+   the UI renders them exactly like a native-tools provider. A
+   `message_end` handler remains as a fallback. Results flow back
+   through the transcript (`[tool result: …]`), and every request
+   re-consolidates to the 3-item shape.
+
+   Live-upstream facts the rewriter depends on (captured 2026-10-15
+   with `PI_ZEN_DEBUG=1`, which tees raw upstream SSE to
+   `/tmp/pi-zen-sse-upstream.sse`):
+   - a tool-call turn arrives as **several output items**: a
+     `reasoning` item, a prose `message` item, and the ```tool fence
+     as its **own** `message` item — so text state is tracked
+     per output item and each item's done-event is rewritten with
+     that item's fence-free text only (otherwise the prose item's
+     text is duplicated into the fence item's slot);
+   - the fence item closes with `response.content_part.done` and
+     `response.output_item.done` but **no** `output_text.done`;
+   - normal markdown code fences (answers quoting command output)
+   pass through untouched.
 4. Session affinity: Pi's session id maps deterministically to one Zen
    `ses_` SortableID (minted fresh on first use) for sticky routing and
    cache warmth.
 
 Verified working through full Pi (print mode): plain chat, `read`,
 `bash`, `write`, and multi-round write→read chains; every wire round
-inspected as `[developer, system, user]`, all 200s.
+inspected as `[developer, system, user]`, all 200s. The stream rewrite
+is covered by `test/stream.test.ts` (structural + conformance against
+pi-ai's real `processResponsesStream`, including a regression test for
+the real multi-item Zen turn shape) and `test/e2e-openai-sdk.test.ts`
+(real OpenAI SDK over a mock Zen SSE server), and was re-verified
+against the live endpoint: prose rendered once, fences fully
+suppressed, native `toolCall` blocks in the session file.
 
 ## 6. Maintenance
 

@@ -11,8 +11,8 @@ OpenCode"`.
 
 This extension reverse-engineers that gate and satisfies it from inside
 Pi — so the free models show up in `/model` like any other provider, and
-Pi's **real tools work** (read, bash, edit, write, multi-round loops),
-not just chat.
+Pi's **real tools work** (read, bash, edit, write, multi-round loops,
+natively rendered in the UI), not just chat.
 
 Full reverse-engineering write-up — every gate rule, what failed, what
 works, and how to re-capture artifacts when OpenCode rotates them:
@@ -62,10 +62,13 @@ patch scoped to `opencode.ai`:
 - the required marker prompt injected as `input[0]`, defused by a
   precedence preamble so Pi's instructions govern,
 - every request collapsed to `[developer, system, user(transcript)]`,
-- **tool calling as a text protocol**: the model emits fenced
-  ` ```tool {"name","arguments"} ` blocks; a `message_end` handler turns
-  them into real tool calls, so Pi executes actual tools and feeds
-  results back through the transcript. Parallel blocks run in parallel.
+- **tool calling translated on the wire**: the model emits fenced
+  ` ```tool {"name","arguments"} ` blocks; the SSE **response stream is
+  rewritten in-flight** into native Responses `function_call` events, so
+  Pi sees and renders real tool calls — live during streaming, exactly
+  like a provider with native tool calling. The fence text never appears
+  in the chat UI. A `message_end` fallback still catches anything that
+  slips through untranslated.
 
 ## Configuration
 
@@ -77,7 +80,7 @@ patch scoped to `opencode.ai`:
 | `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = chat only (drops the tool loadout) |
 | `PI_ZEN_TOOLS` | — | `keep` disables all request shaping (raw passthrough) |
 | `PI_ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | force a base URL (testing) |
-| `PI_ZEN_DEBUG` | off | `1` dumps wire summaries to `/tmp/pi-zen-debug.json` |
+| `PI_ZEN_DEBUG` | off | `1` dumps wire summaries to `/tmp/pi-zen-debug.json` and tees raw upstream SSE to `/tmp/pi-zen-sse-upstream.sse` (`PI_ZEN_SSE_PATH` overrides) |
 
 ## Limits
 
@@ -91,6 +94,11 @@ patch scoped to `opencode.ai`:
 - Images from the most recent user turn are carried on the wire; earlier
   turns' images degrade to `[image attached]` transcript markers, and
   tool-result images (e.g. `read` on a PNG) arrive as text only.
+- Tool calls are recognized as fenced ` ```tool ` blocks in the model's
+  text output and translated on the response stream; a block whose JSON
+  is malformed is deliberately left visible as text so the model can
+  self-correct, and text is held back briefly while a potential fence
+  opener streams in.
 - Sessions on this provider are best kept to fresh conversations; the
   wire transcript grows every round.
 

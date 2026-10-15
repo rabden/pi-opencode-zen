@@ -1,7 +1,7 @@
 {
   "name": "@rabden/pi-opencode-zen",
-  "version": "0.1.0",
-  "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with text-protocol tool calling",
+  "version": "0.2.0",
+  "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with stream-translated tool calling",
   "type": "module",
   "license": "MIT",
   "author": "rabden",
@@ -19,13 +19,15 @@
   "files": [
     "index.ts",
     "marker.ts",
+    "stream.ts",
     "README.md",
     "docs/zen-gate-notes.md"
   ],
   "scripts": {
     "clean": "echo 'nothing to clean'",
     "build": "echo 'nothing to build'",
-    "check": "echo 'nothing to check'"
+    "check": "node test/stream.test.ts && node test/e2e-openai-sdk.test.ts",
+    "test": "node test/stream.test.ts && node test/e2e-openai-sdk.test.ts"
   },
   "pi": {
     "extensions": [
