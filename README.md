@@ -2,12 +2,13 @@
 
 **Use OpenCode Zen's free models outside OpenCode — right inside [Pi](https://pi.dev).**
 
-OpenCode Zen gives away large daily quotas on strong models
-(`muse-spark-1.3-contributor-free`, `exo-free`, `space-bunny-free`, …),
-but the free tier is gated to the official OpenCode client: point any
-other tool at `https://opencode.ai/zen/v1` and you get
-`403 FreeTierError: "OpenCode's free tier can only be used from within
-OpenCode"`.
+OpenCode Zen gives away large daily quotas on strong models, but the
+free tier is gated to the official OpenCode client: point any other
+tool at `https://opencode.ai/zen/v1` and you get `403 FreeTierError`.
+Through this provider, the usable free model is
+`muse-spark-1.3-contributor-free` (Responses protocol, reasoning from
+`minimal` to `max`); the other `-free` ids are chat-completions-native
+and unusable on `/responses`, and `exo-free` is deprecated.
 
 This extension reverse-engineers that gate and satisfies it from inside
 Pi — so the free models show up in `/model` like any other provider, and
@@ -88,7 +89,7 @@ patch scoped to `opencode.ai`:
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENCODE_API_KEY` | — | `public` for free models; a real Zen key also works |
-| `PI_ZEN_ALL_MODELS` | off | `1` lists the full (paid) Zen catalog; default lists `-free` models only |
+| `PI_ZEN_ALL_MODELS` | off | `1` lists the full paid Zen catalog (Responses-protocol models only — needs a funded key); default lists the `-free` models that actually work over `/responses` |
 | `PI_ZEN_VISION` | `1` | image input (`@file` attachments); `0` declares text-only models |
 | `PI_ZEN_TEXT_TOOLS` | `1` | text-protocol tool calling; `0` = chat only (drops the tool loadout) |
 | `PI_ZEN_TOOLS` | — | `keep` disables all request shaping (raw passthrough) |
@@ -99,6 +100,12 @@ patch scoped to `opencode.ai`:
 
 - The marker prompt and UA are pinned to OpenCode CLI 1.19.0. If Zen
   rotates them, requests 403 until re-captured (procedure in the notes).
+- Model metadata (names, thinking levels, context/output limits) comes
+  from a table generated from pi-ai's OpenCode catalog with empirical
+  corrections (`models-meta.ts`); regenerate with
+  `node scripts/generate-models-meta.mjs` after a pi-ai update. A
+  rejected thinking level makes the endpoint answer 400 naming the
+  model's supported efforts — an easy way to verify the map.
 - The marker's title-generator persona occasionally bleeds through;
   the preamble suppresses it — retry the prompt if an answer looks
   like a title.

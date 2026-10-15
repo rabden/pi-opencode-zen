@@ -18,6 +18,7 @@
   ],
   "files": [
     "index.ts",
+    "models-meta.ts",
     "marker.ts",
     "stream.ts",
     "README.md",

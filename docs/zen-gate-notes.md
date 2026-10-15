@@ -180,3 +180,28 @@ If OpenCode rotates either, requests start 403ing. Re-capture procedure:
 Expected rotations to watch: new prompt wording, UA version bumps, the
 2-item input budget, marker-role requirements, and per-session
 registration (currently absent — ids are client-minted).
+
+## 7. Thinking levels / reasoning effort (probed 2026-10-15)
+
+The `/responses` endpoint validates `reasoning.effort` per model and
+rejects unsupported values with a 400 that names the allowed set —
+for `muse-spark-1.3-contributor-free`:
+
+```
+reasoning_effort 'none' is not supported for model
+'muse-spark-1.3-contributor'. Supported values:
+[minimal, low, medium, high, xhigh, max]
+```
+
+So muse has no "off" (requests without a level should omit
+`reasoning`, which pi does when the model's `thinkingLevelMap` has
+`off: null`), and it does accept `minimal` and `max`. pi-ai's bundled
+catalog hides `max` for muse; the extension's `models-meta.ts`
+carries the corrected map plus an overrides table in
+`scripts/generate-models-meta.mjs` documenting the probes.
+
+Also verified on that sweep: chat-completions-native `-free` models
+(`space-bunny-free`, `mimo-*`, `nemotron-*`, …) answer
+`ModelProtocolUnsupported` on `/responses`, and `exo-free` is
+`410 ModelDeprecated` — only the muse frees (and the paid
+Responses-protocol catalog) are usable through this provider.

@@ -51,6 +51,7 @@ import {
 	type Provider,
 	type RefreshModelsContext,
 } from "@earendil-works/pi-ai/compat";
+import { ZEN_MODEL_META, type ZenModelMeta } from "./models-meta.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ZEN_MARKER_PROMPT } from "./marker.ts";
 import { harvestToolBlocks, mintToolCallIds, wrapZenSseResponse } from "./stream.ts";
@@ -64,12 +65,19 @@ const MODELS_URL = `${BASE_URL}/models`;
 const ZEN_USER_AGENT = "opencode/1.19.0 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14";
 
 // Fallback catalog used before the first successful /models refresh.
-const FALLBACK_MODEL_IDS = ["muse-spark-1.3-contributor-free", "exo-free", "space-bunny-free"];
+// Only muse-spark is actually usable through /responses: the other
+// "-free" ids are chat-completions-native and the endpoint answers
+// ModelProtocolUnsupported for them (exo-free is deprecated outright —
+// verified live 2026-10-15).
+const FALLBACK_MODEL_IDS = ["muse-spark-1.3-contributor-free"];
 
-// Paid zen models 402 for anonymous/free-tier keys, so by default only the
-// free ("-free") models are listed. Set PI_ZEN_ALL_MODELS=1 to see the full
-// catalog (requires a funded key).
+// Listable = speakable through this provider's single protocol
+// (/zen/v1/responses). Chat- or Anthropic-native zen models are excluded
+// even though /models advertises them. Set PI_ZEN_ALL_MODELS=1 to also
+// list the paid Responses models (requires a funded key).
 function isListableModel(id: string): boolean {
+	const meta = ZEN_MODEL_META[id];
+	if (meta?.api !== undefined && meta.api !== "openai-responses") return false;
 	return process.env.PI_ZEN_ALL_MODELS === "1" || id.includes("-free");
 }
 
@@ -485,19 +493,31 @@ function installFetchPatch(): void {
 // verified against the gateway. Set PI_ZEN_VISION=0 to declare text-only.
 const VISION_ENABLED = process.env.PI_ZEN_VISION !== "0";
 
+/**
+ * Model metadata (names, thinking levels, context/output limits) comes
+ * from a table generated from pi-ai's bundled OpenCode catalog — the
+ * same metadata pi's built-in opencode provider uses (models-meta.ts,
+ * regenerate via scripts/generate-models-meta.mjs). The gate serves
+ * every free model on /responses only, so the API is always forced to
+ * openai-responses regardless of the catalog entry's native API.
+ */
 function toChatModel(id: string): Model<"openai-responses"> {
-	return {
+	const meta: ZenModelMeta | undefined = ZEN_MODEL_META[id];
+	const model: Model<"openai-responses"> = {
 		id,
-		name: id,
+		name: meta?.name ?? id,
 		api: "openai-responses",
 		provider: PROVIDER_ID,
 		baseUrl: BASE_URL,
-		reasoning: true,
-		input: VISION_ENABLED ? ["text", "image"] : ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 200000,
-		maxTokens: 16384,
+		reasoning: meta?.reasoning ?? true,
+		input: VISION_ENABLED ? (meta?.input ?? ["text", "image"]) : ["text"],
+		cost: meta?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: meta?.contextWindow ?? 200000,
+		maxTokens: meta?.maxTokens ?? 16384,
 	};
+	if (meta?.thinkingLevelMap) model.thinkingLevelMap = meta.thinkingLevelMap as Model<"openai-responses">["thinkingLevelMap"];
+	if (meta?.inputLimits) model.inputLimits = meta.inputLimits as Model<"openai-responses">["inputLimits"];
+	return model;
 }
 
 interface OpenAIModelList {
