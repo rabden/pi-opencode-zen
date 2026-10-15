@@ -509,6 +509,69 @@ test("real Zen shape: prose item and fence item separate — no duplicated text"
 	assert.deepEqual(outputTexts, ["Running probe command.", ""]);
 });
 
+test("bash heredoc containing triple backticks parses as a call (the 'model stops midway' bug)", async () => {
+	const cmd = 'cat > README.md <<\'EOF\'\n# Title\n```bash\nls -la\n```\nEOF';
+	const json = JSON.stringify({ name: "bash", arguments: { command: cmd } });
+	const upstream = buildUpstream({ deltas: [`Writing.\n\`\`\`tool\n${json}\n\`\`\`\nDone.`] });
+	const out = await rewrite(upstream);
+	const events = parseEvents(out);
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	const pi = await runThroughPi(events);
+	const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+	assert.ok(call, "call parsed despite inner backticks");
+	assert.equal(call.name, "bash");
+	assert.equal(call.arguments.command, cmd);
+	assert.equal(pi.output.stopReason, "toolUse");
+	assert.equal(pi.output.content.find((b: Record<string, any>) => b.type === "text").text.trim(), "Writing.\n\nDone.");
+});
+
+test("heredoc fence split across many small chunks still parses", async () => {
+	const cmd = "printf '%s\\n' '```md' '# hi' '```' > f.md";
+	const json = JSON.stringify({ name: "bash", arguments: { command: cmd } });
+	const whole = `Check.\n\`\`\`tool\n${json}\n\`\`\``;
+	// one character per chunk
+	const events = parseEvents(await rewrite(buildUpstream({ deltas: [...whole] }), 1));
+	const pi = await runThroughPi(events);
+	const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+	assert.equal(call.arguments.command, cmd);
+	assert.equal(pi.output.stopReason, "toolUse");
+});
+
+test("opener variants still parse: ```tools and info-string suffix", async () => {
+	for (const opener of ["```tools", "```tool json"]) {
+		const json = JSON.stringify({ name: "read", arguments: { path: "a" } });
+		const events = parseEvents(await rewrite(buildUpstream({ deltas: [`${opener}\n${json}\n\`\`\``] })));
+		const pi = await runThroughPi(events);
+		const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+		assert.equal(call.name, "read", `opener ${opener} parsed`);
+		assert.deepEqual(call.arguments, { path: "a" });
+	}
+});
+
+test("braces and escaped quotes inside strings do not confuse the scanner", async () => {
+	const cmd = 'echo "{ not json }" \\"quoted\\" \\" && printf "a}b{c"';
+	const json = JSON.stringify({ name: "bash", arguments: { command: cmd } });
+	const events = parseEvents(await rewrite(buildUpstream({ deltas: ["```tool\n" + json + "\n```"] })));
+	const pi = await runThroughPi(events);
+	const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+	assert.equal(call.arguments.command, cmd);
+});
+
+test("harvestToolBlocks (message_end fallback parser) matches the stream parser", async () => {
+	const { harvestToolBlocks } = await import("../stream.ts");
+	const cmd = "cat <<'EOF'\n```\nEOF";
+	const json = JSON.stringify({ name: "bash", arguments: { command: cmd } });
+	const { cleanedText, calls } = harvestToolBlocks(`Before.\n\`\`\`tool\n${json}\n\`\`\`\nAfter.`);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: cmd });
+	assert.equal(cleanedText.trim(), "Before.\n\nAfter.");
+	// prose mentioning the fence is untouched
+	const prose = harvestToolBlocks("Use the ```tool protocol for calls.");
+	assert.equal(prose.calls.length, 0);
+	assert.equal(prose.cleanedText, "Use the ```tool protocol for calls.");
+});
+
 test("non-SSE responses are not mangled by the rewriter path (sanity)", async () => {
 	// wrapZenSseResponse is only called for SSE bodies by index.ts; verify it
 	// still behaves when handed a JSON body by mistake: frames without data

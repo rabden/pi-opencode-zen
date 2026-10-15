@@ -52,7 +52,9 @@ export interface ZenToolCall {
 	arguments: string;
 }
 
-const FENCE_OPEN = "```tool";
+const FENCE_MARKER = "```tool";
+/** Fence opener: "```tool", tolerating variants ("```tools", "``` tool", …). */
+const FENCE_OPEN_RE = /```[ \t]*tool/;
 
 let callCounter = 0;
 
@@ -82,15 +84,67 @@ export function parseToolBlock(payload: string): { name: string; arguments: stri
 }
 
 /**
- * How much of the buffer is safe to flush live: everything except a tail
- * that could still grow into a fence opener ("`", "``", "```", "```t", …).
+ * How much of the buffer is safe to flush live: everything except a
+ * tail that could still grow into a fence opener (a prefix of
+ * "```tool", or a bare run of backticks, possibly space-padded).
  */
 function safeTail(buffer: string): number {
-	const maxHold = Math.min(FENCE_OPEN.length - 1, buffer.length);
+	const maxHold = Math.min(FENCE_MARKER.length + 2, buffer.length);
 	for (let hold = maxHold; hold >= 1; hold--) {
-		if (buffer.endsWith(FENCE_OPEN.slice(0, hold))) return buffer.length - hold;
+		const tail = buffer.slice(buffer.length - hold);
+		if (FENCE_MARKER.startsWith(tail)) return buffer.length - hold;
+		if (/^`+[ \t]*$/.test(tail)) return buffer.length - hold;
 	}
 	return buffer.length;
+}
+
+/**
+ * Find the end of a fenced tool block starting at `from` (just past
+ * the opener marker): the FIRST balanced JSON object — scanning braces
+ * with string/escape awareness — followed by the closing fence.
+ *
+ * This is what makes bash tool calls work: command strings routinely
+ * contain triple backticks (heredocs writing markdown, echoed code
+ * fences…), so "close at the first ```" truncates the JSON and the
+ * call is lost. Brace scanning finds the real end of the JSON first,
+ * then expects the closing fence after it.
+ *
+ * Returns null while the block is still incomplete (streaming) or
+ * when the text is not a well-formed block (prose mentioning ```tool).
+ */
+function scanToolBlock(s: string, from: number): { payload: string; end: number } | null {
+	let start = -1;
+	for (let i = from; i < s.length; i++) {
+		if (s[i] === "{") {
+			start = i;
+			break;
+		}
+	}
+	if (start === -1) return null;
+	let depth = 0;
+	let inString = false;
+	let escape = false;
+	for (let j = start; j < s.length; j++) {
+		const ch = s[j];
+		if (inString) {
+			if (escape) escape = false;
+			else if (ch === "\\") escape = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === "{") depth++;
+		else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				const rest = s.slice(j + 1);
+				const closing = /^\s*```/.exec(rest);
+				if (closing === null) return null; // JSON complete, closing fence not arrived yet
+				return { payload: s.slice(start, j + 1), end: j + 1 + closing[0].length };
+			}
+		}
+	}
+	return null; // braces still unbalanced (streaming or malformed)
 }
 
 /** Fence-holdback state for one message output item. */
@@ -101,6 +155,65 @@ interface ItemTextState {
 	flushed: string;
 	itemId: string;
 	finalized: boolean;
+}
+
+/**
+ * Consume an item's pending buffer: flush text that cannot be part
+ * of a tool block, harvest complete blocks as calls, re-emit
+ * unparseable blocks as text. With final=false an open or partial
+ * fence is held; with final=true the remainder is decided (unclosed
+ * fences stay text so the model can see its own malformed call and
+ * self-correct).
+ */
+function pumpText(state: ItemTextState, final: boolean, calls: ZenToolCall[]): string {
+	let outText = "";
+	for (;;) {
+		const openMatch = FENCE_OPEN_RE.exec(state.pending);
+		if (openMatch === null) {
+			const safe = final ? state.pending.length : safeTail(state.pending);
+			if (safe > 0) {
+				outText += state.pending.slice(0, safe);
+				state.pending = state.pending.slice(safe);
+			}
+			break;
+		}
+		if (openMatch.index > 0) {
+			outText += state.pending.slice(0, openMatch.index);
+			state.pending = state.pending.slice(openMatch.index);
+		}
+		const scanned = scanToolBlock(state.pending, openMatch[0].length);
+		if (scanned === null) {
+			if (final) {
+				// Unclosed / malformed fence at stream end: keep it visible
+			// as text for self-correction.
+				outText += state.pending;
+				state.pending = "";
+			}
+			break;
+		}
+		const call = parseToolBlock(scanned.payload);
+		if (call) {
+			const ids = mintToolCallIds();
+			calls.push({ ...ids, ...call });
+		} else {
+			// Not a valid call: keep it visible as text.
+			outText += state.pending.slice(0, scanned.end);
+		}
+		state.pending = state.pending.slice(scanned.end);
+	}
+	state.flushed += outText;
+	return outText;
+}
+
+/**
+ * Harvest fenced tool blocks from a complete string (the message_end
+ * fallback path shares this parser with the stream rewriter).
+ */
+export function harvestToolBlocks(text: string): { cleanedText: string; calls: ZenToolCall[] } {
+	const state: ItemTextState = { pending: text, flushed: "", itemId: "", finalized: false };
+	const calls: ZenToolCall[] = [];
+	pumpText(state, true, calls);
+	return { cleanedText: state.flushed, calls };
 }
 
 export interface ZenStreamRewriter {
@@ -154,56 +267,8 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 			delta: text,
 		});
 
-	/**
-	 * Consume an item's pending buffer: flush text that cannot be part
-	 * of a tool block, harvest complete blocks as calls, re-emit
-	 * unparseable blocks as text. With final=false an open or partial
-	 * fence is held; with final=true the remainder is decided (unclosed
-	 * fences become text unless they still parse as a call).
-	 */
-	const pumpState = (state: ItemTextState, final: boolean): string => {
-		let outText = "";
-		for (;;) {
-			const open = state.pending.indexOf(FENCE_OPEN);
-			if (open === -1) {
-				const safe = final ? state.pending.length : safeTail(state.pending);
-				if (safe > 0) {
-					outText += state.pending.slice(0, safe);
-					state.pending = state.pending.slice(safe);
-				}
-				break;
-			}
-			if (open > 0) {
-				outText += state.pending.slice(0, open);
-				state.pending = state.pending.slice(open);
-			}
-			const close = state.pending.indexOf("```", FENCE_OPEN.length);
-			if (close === -1) {
-				if (final) {
-					const call = parseToolBlock(state.pending.slice(FENCE_OPEN.length));
-					if (call) {
-						const ids = mintToolCallIds();
-						calls.push({ ...ids, ...call });
-					} else {
-						outText += state.pending;
-					}
-					state.pending = "";
-				}
-				break;
-			}
-			const call = parseToolBlock(state.pending.slice(FENCE_OPEN.length, close));
-			if (call) {
-				const ids = mintToolCallIds();
-				calls.push({ ...ids, ...call });
-			} else {
-				// Not a valid call: keep it visible as text.
-				outText += state.pending.slice(0, close + 3);
-			}
-			state.pending = state.pending.slice(close + 3);
-		}
-		state.flushed += outText;
-		return outText;
-	};
+	/** Pump an item's text (see module-level pumpText); closes over the shared call list. */
+	const pumpState = (state: ItemTextState, final: boolean): string => pumpText(state, final, calls);
 
 	/** Decide an item's remainder and return any residual live delta. */
 	const finalizeItem = (state: ItemTextState): string => {

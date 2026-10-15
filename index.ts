@@ -53,7 +53,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ZEN_MARKER_PROMPT } from "./marker.ts";
-import { mintToolCallIds, wrapZenSseResponse } from "./stream.ts";
+import { harvestToolBlocks, mintToolCallIds, wrapZenSseResponse } from "./stream.ts";
 
 export const PROVIDER_ID = "opencode-zen";
 const BASE_URL = process.env.PI_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1";
@@ -184,48 +184,30 @@ function isAssistantMessage(message: unknown): message is AssistantContentMessag
 	);
 }
 
-/** Parse fenced ```tool blocks from an assistant message's text blocks. */
+/** Parse fenced ```tool blocks from an assistant message's text blocks
+ * (fallback path; shares its parser with the stream rewriter). */
 function extractToolBlocks(message: AssistantContentMessage): {
 	textBlocks: TextBlock[];
 	toolCalls: WireToolCall[];
 } {
 	const textBlocks: TextBlock[] = [];
 	const toolCalls: WireToolCall[] = [];
-	let counter = 0;
 	for (const block of message.content) {
 		if (block.type !== "text" || typeof block.text !== "string") continue;
-		let text = block.text;
-		const fence = /```tool\s*\n([\s\S]*?)```/g;
-		let match: RegExpExecArray | null;
-		let matched = false;
-		while ((match = fence.exec(text)) !== null) {
-			matched = true;
+		const { cleanedText, calls } = harvestToolBlocks(block.text);
+		for (const call of calls) {
+			let args: Record<string, unknown> = {};
 			try {
-				const parsed = JSON.parse(match[1].trim()) as { name?: unknown; arguments?: unknown };
-				if (
-					typeof parsed.name === "string" &&
-					parsed.name.length > 0 &&
-					(parsed.arguments === undefined ||
-						typeof parsed.arguments === "object" ||
-						typeof parsed.arguments === "string")
-				) {
-					const ids = mintToolCallIds();
-					toolCalls.push({
-						type: "toolCall",
-						id: ids.id,
-						name: parsed.name,
-						arguments:
-							typeof parsed.arguments === "object" && parsed.arguments !== null
-								? (parsed.arguments as Record<string, unknown>)
-								: {},
-					});
+				const parsedArgs = JSON.parse(call.arguments) as unknown;
+				if (typeof parsedArgs === "object" && parsedArgs !== null) {
+					args = parsedArgs as Record<string, unknown>;
 				}
 			} catch {
-				// Malformed JSON: leave the block as plain text for self-correction.
+				// Serialized arguments should always parse; fall back to {}.
 			}
+			toolCalls.push({ type: "toolCall", id: call.id, name: call.name, arguments: args });
 		}
-		if (matched) text = text.replace(/```tool\s*\n[\s\S]*?```/g, "").trim();
-		if (text.length > 0) textBlocks.push({ type: "text", text });
+		if (cleanedText.trim().length > 0) textBlocks.push({ type: "text", text: cleanedText });
 	}
 	return { textBlocks, toolCalls };
 }
