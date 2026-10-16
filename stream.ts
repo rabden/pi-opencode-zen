@@ -154,6 +154,8 @@ interface ItemTextState {
 	/** Text flushed (or re-emitted) for this item — its final text. */
 	flushed: string;
 	itemId: string;
+	/** Output index to use on frames synthesized for this item. */
+	outputIndex: number;
 	finalized: boolean;
 }
 
@@ -235,20 +237,37 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 	let terminalSeen = false;
 	let sequence = 0;
 
-	/** Per-output-item text state (Zen splits prose and fences across items). */
-	const itemStates = new Map<number, ItemTextState>();
+	/**
+	 * Per-message-item text state, keyed by item id (Zen splits prose and
+	 * fences across items). Keying by id rather than output_index keeps
+	 * routing correct when the upstream omits or renumbers indices — the
+	 * one shape-fragile spot left in the forward+patch design.
+	 */
+	const itemStates = new Map<string, ItemTextState>();
+	/** output_index -> item id, for done-events that carry only an index. */
+	const idByIndex = new Map<number, string>();
 	/** Item id -> final fence-free text, for terminal-response output patching. */
 	const flushedById = new Map<string, string>();
-	/** Fallback target for events that omit output_index. */
-	let lastTextIndex = 0;
+	/** Fallback target for events that carry neither id nor index. */
+	let lastItemId = "";
 
-	const stateFor = (outputIndex: unknown): ItemTextState => {
-		const index = typeof outputIndex === "number" && Number.isInteger(outputIndex) ? outputIndex : lastTextIndex;
-		lastTextIndex = index;
-		let state = itemStates.get(index);
+	const stateFor = (itemId: unknown, outputIndex: unknown): ItemTextState => {
+		let id = typeof itemId === "string" && itemId.length > 0 ? itemId : "";
+		if (id === "") {
+			// Resolve via index when the id is missing.
+			if (typeof outputIndex === "number" && Number.isInteger(outputIndex) && idByIndex.has(outputIndex)) {
+				id = idByIndex.get(outputIndex)!;
+			} else {
+				id = lastItemId || "msg_zen_0";
+			}
+		}
+		lastItemId = id;
+		let state = itemStates.get(id);
 		if (state === undefined) {
-			state = { pending: "", flushed: "", itemId: `msg_zen_${index}`, finalized: false };
-			itemStates.set(index, state);
+			const index = typeof outputIndex === "number" && Number.isInteger(outputIndex) ? outputIndex : idByIndex.size;
+			state = { pending: "", flushed: "", itemId: id, outputIndex: index, finalized: false };
+			itemStates.set(id, state);
+			if (!idByIndex.has(index)) idByIndex.set(index, id);
 		}
 		return state;
 	};
@@ -259,10 +278,10 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 		return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 	};
 
-	const deltaFrame = (state: ItemTextState, index: number, text: string): string =>
+	const deltaFrame = (state: ItemTextState, text: string): string =>
 		render("response.output_text.delta", {
 			item_id: state.itemId,
-			output_index: index,
+			output_index: state.outputIndex,
 			content_index: 0,
 			delta: text,
 		});
@@ -383,8 +402,7 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 			case "response.output_item.added": {
 				trackOutputIndex(parsed.output_index);
 				if (parsed.item && typeof parsed.item === "object" && parsed.item.type === "message") {
-					const state = stateFor(parsed.output_index);
-					if (typeof parsed.item.id === "string") state.itemId = parsed.item.id;
+					stateFor(parsed.item.id, parsed.output_index);
 				}
 				return [render(type, parsed)];
 			}
@@ -392,8 +410,7 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 			case "response.output_text.delta": {
 				if (typeof parsed.delta !== "string") return [render(type, parsed)];
 				trackOutputIndex(parsed.output_index);
-				const state = stateFor(parsed.output_index);
-				if (typeof parsed.item_id === "string") state.itemId = parsed.item_id;
+				const state = stateFor(parsed.item_id, parsed.output_index);
 				state.pending += parsed.delta;
 				const text = pumpState(state, false);
 				if (text.length === 0) return [];
@@ -402,13 +419,10 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 			}
 
 			case "response.output_text.done": {
-				const state = stateFor(parsed.output_index);
+				const state = stateFor(parsed.item_id, parsed.output_index);
 				const extra = finalizeItem(state);
 				const out: string[] = [];
-				if (extra.length > 0) {
-					const index = typeof parsed.output_index === "number" ? parsed.output_index : lastTextIndex;
-					out.push(deltaFrame(state, index, extra));
-				}
+				if (extra.length > 0) out.push(deltaFrame(state, extra));
 				flushedById.set(state.itemId, state.flushed);
 				if (typeof parsed.text === "string") parsed.text = state.flushed;
 				out.push(render(type, parsed));
@@ -422,13 +436,10 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 			case "response.content_part.done": {
 				// Some upstream items close with content_part.done only (no
 				// output_text.done): finalize there too.
-				const state = stateFor(parsed.output_index);
+				const state = stateFor(parsed.item_id, parsed.output_index);
 				const out: string[] = [];
 				const extra = finalizeItem(state);
-				if (extra.length > 0) {
-					const index = typeof parsed.output_index === "number" ? parsed.output_index : lastTextIndex;
-					out.push(deltaFrame(state, index, extra));
-				}
+				if (extra.length > 0) out.push(deltaFrame(state, extra));
 				flushedById.set(state.itemId, state.flushed);
 				if (
 					parsed.part &&
@@ -445,13 +456,10 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 				trackOutputIndex(parsed.output_index);
 				const item = parsed.item;
 				if (item && typeof item === "object" && item.type === "message") {
-					const state = stateFor(parsed.output_index);
+					const state = stateFor(item.id, parsed.output_index);
 					const out: string[] = [];
 					const extra = finalizeItem(state);
-					if (extra.length > 0) {
-						const index = typeof parsed.output_index === "number" ? parsed.output_index : lastTextIndex;
-						out.push(deltaFrame(state, index, extra));
-					}
+					if (extra.length > 0) out.push(deltaFrame(state, extra));
 					flushedById.set(state.itemId, state.flushed);
 					if (Array.isArray(item.content)) {
 						const text = state.flushed;
@@ -474,9 +482,9 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 				const out: string[] = [];
 				// Finalize every item (upstream closed without per-item done
 				// events): residual text first, then any unemitted calls.
-				for (const [index, state] of itemStates) {
+				for (const state of itemStates.values()) {
 					const extra = finalizeItem(state);
-					if (extra.length > 0) out.push(deltaFrame(state, index, extra));
+					if (extra.length > 0) out.push(deltaFrame(state, extra));
 					flushedById.set(state.itemId, state.flushed);
 				}
 				out.push(...emitCallFrames());

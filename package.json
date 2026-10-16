@@ -22,7 +22,8 @@
     "marker.ts",
     "stream.ts",
     "README.md",
-    "docs/zen-gate-notes.md"
+    "docs/zen-gate-notes.md",
+    "docs/rebuild-plan.md"
   ],
   "scripts": {
     "clean": "echo 'nothing to clean'",

@@ -572,6 +572,49 @@ test("harvestToolBlocks (message_end fallback parser) matches the stream parser"
 	assert.equal(prose.cleanedText, "Use the ```tool protocol for calls.");
 });
 
+test("id-keyed routing survives missing and renumbered output_index (hardening)", async () => {
+	// Noncompliant shapes: deltas with no output_index at all, and a
+	// done-event whose index disagrees with the added-event's. Items are
+	// routed by item id, so neither confuses the rewrite.
+	const seq = (() => {
+		let n = 0;
+		return () => n++;
+	})();
+	const f = (type: string, data: Record<string, unknown>): string => `event: ${type}\ndata: ${JSON.stringify({ sequence_number: seq(), ...data, type })}\n\n`;
+	const cmd = JSON.stringify({ name: "bash", arguments: { command: "echo x" } });
+	const upstream = [
+		f("response.created", { response: { id: "resp_h", status: "in_progress", output: [] } }),
+		f("response.output_item.added", { output_index: 1, item: { id: "rs_b", type: "message", status: "in_progress", role: "assistant", content: [] } }),
+		// No output_index on the deltas:
+		f("response.output_text.delta", { item_id: "rs_b", content_index: 0, delta: "Running." }),
+		f("response.output_item.done", { output_index: 5, item: { id: "rs_b", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "Running.", annotations: [] }] } }),
+		f("response.output_item.added", { output_index: 2, item: { id: "msg_c", type: "message", status: "in_progress", role: "assistant", content: [] } }),
+		f("response.output_text.delta", { item_id: "msg_c", content_index: 0, delta: "```" }),
+		f("response.output_text.delta", { item_id: "msg_c", content_index: 0, delta: `tool\n${cmd}\n\`\`\`` }),
+		f("response.output_item.done", { output_index: 9, item: { id: "msg_c", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "fence", annotations: [] }] } }),
+		f("response.completed", {
+			response: {
+				id: "resp_h",
+				status: "completed",
+				output: [
+					{ id: "rs_b", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "Running.", annotations: [] }] },
+					{ id: "msg_c", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "fence", annotations: [] }] },
+				],
+				usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+			},
+		}),
+	].join("");
+	const out = await rewrite(upstream);
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	const events = parseEvents(out);
+	const pi = await runThroughPi(events);
+	const texts = pi.output.content.filter((b: Record<string, any>) => b.type === "text").map((b: Record<string, any>) => b.text);
+	assert.equal(texts.filter((t: string) => t === "Running.").length, 1, "prose once despite index-less deltas and renumbered done");
+	const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+	assert.equal(call.name, "bash");
+	assert.equal(pi.output.stopReason, "toolUse");
+});
+
 test("non-SSE responses are not mangled by the rewriter path (sanity)", async () => {
 	// wrapZenSseResponse is only called for SSE bodies by index.ts; verify it
 	// still behaves when handed a JSON body by mistake: frames without data
