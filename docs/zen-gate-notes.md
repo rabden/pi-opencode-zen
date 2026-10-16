@@ -204,6 +204,16 @@ endpoint field), so the extension (>= 0.3.0):
   cross-translated (chat↔responses synthesizers); the learned protocol
   is cached per model for the session.
 
+Chat-native deepseek models sometimes ignore the fence protocol and
+emit their native **DSML tool markup** as text
+(`<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="…">…`, observed live
+2026-10-16). The fence pump recognizes and harvests DSML blocks like
+fences — earliest marker wins, partial blocks held — so those turns
+still execute as tool calls instead of ending in raw markup. Also note
+ll-alpha-free answered 422 "Endpoint is unavailable" on chat (its
+correct endpoint) on 2026-10-16: listed in the docs but not deployed —
+an OpenCode-side gap, surfaced as-is.
+
 Watch for: `jev-*-free` (System One, excluded), deprecated ids (410
 with a `replacement` hint), and models listed in docs before their
 endpoint is live (ll-alpha-free answered 422 "Endpoint is unavailable"

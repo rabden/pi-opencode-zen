@@ -56,6 +56,48 @@ const FENCE_MARKER = "```tool";
 /** Fence opener: "```tool", tolerating variants ("```tools", "``` tool", …). */
 const FENCE_OPEN_RE = /```[ \t]*tool/;
 
+// DeepSeek's native tool-call markup (DSML), emitted as plain text when
+// the model ignores the fence protocol — observed live 2026-10-16:
+//   <｜｜DSML｜｜ calls>
+//   <｜｜DSML｜｜ invoke name="bash">
+//   <｜｜DSML｜｜ parameter name="command" string="true">echo hi</｜｜DSML｜｜ parameter>
+//   </｜｜DSML｜｜ invoke>
+//   </｜｜DSML｜｜ calls>
+// The special-token bars arrive fullwidth; tolerate any bar flavour/Count.
+const DSML_CORE = "[\uFF5C|\u2502]*DSML[\uFF5C|\u2502]*";
+const DSML_OPEN_RE = new RegExp(`<${DSML_CORE}\\s*calls\\s*>`);
+const DSML_CLOSE_RE = new RegExp(`</${DSML_CORE}\\s*calls\\s*>`);
+const DSML_INVOKE_RE = new RegExp(`<${DSML_CORE}\\s*invoke\\s+name="([^"]*)"\\s*>([\\s\\S]*?)</${DSML_CORE}\\s*invoke>`, "g");
+const DSML_PARAM_RE = new RegExp(`<${DSML_CORE}\\s*parameter\\s+name="([^"]*)"[^>]*>([\\s\\S]*?)</${DSML_CORE}\\s*parameter>`, "g");
+
+/** Parse one complete DSML block into tool calls (empty when malformed). */
+function parseDsmlBlock(block: string): Array<{ name: string; arguments: string }> {
+	const calls: Array<{ name: string; arguments: string }> = [];
+	for (const invoke of block.matchAll(DSML_INVOKE_RE)) {
+		const name = invoke[1];
+		if (name === undefined || name.length === 0) continue;
+		const args: Record<string, unknown> = {};
+		for (const param of invoke[2].matchAll(DSML_PARAM_RE)) {
+			const key = param[1];
+			const raw = param[2];
+			if (key === undefined || key.length === 0) continue;
+			const trimmed = raw.trim();
+			// string="true" parameters keep their text; bare scalars parse.
+			if (/^(?:true|false|-?\d+(?:\.\d+)?)$/.test(trimmed)) {
+				try {
+					args[key] = JSON.parse(trimmed);
+					continue;
+				} catch {
+					// fall through to string
+				}
+			}
+			args[key] = raw;
+		}
+		calls.push({ name, arguments: JSON.stringify(args) });
+	}
+	return calls;
+}
+
 let callCounter = 0;
 
 /** Mint globally-unique call ids (shared with the message_end fallback). */
@@ -170,41 +212,77 @@ interface ItemTextState {
 function pumpText(state: ItemTextState, final: boolean, calls: ZenToolCall[]): string {
 	let outText = "";
 	for (;;) {
-		const openMatch = FENCE_OPEN_RE.exec(state.pending);
+		const fenceMatch = FENCE_OPEN_RE.exec(state.pending);
+		const dsmlMatch = DSML_OPEN_RE.exec(state.pending);
+		// Earliest marker wins; a fence at 0 or a DSML block at 0 both
+		// start a tool call region.
+		const useDsml =
+			dsmlMatch !== null && (fenceMatch === null || dsmlMatch.index <= fenceMatch.index);
+		const openMatch = useDsml ? dsmlMatch : fenceMatch;
 		if (openMatch === null) {
+			// No opener: flush what cannot grow into one.
 			const safe = final ? state.pending.length : safeTail(state.pending);
 			if (safe > 0) {
 				outText += state.pending.slice(0, safe);
 				state.pending = state.pending.slice(safe);
 			}
-			break;
+			state.flushed += outText;
+			return outText;
 		}
 		if (openMatch.index > 0) {
 			outText += state.pending.slice(0, openMatch.index);
 			state.pending = state.pending.slice(openMatch.index);
 		}
+		if (useDsml) {
+			const closeMatch = DSML_CLOSE_RE.exec(state.pending);
+			if (closeMatch === null) {
+				// Incomplete DSML block: hold (or re-emit at final).
+				if (final) {
+					outText += state.pending;
+					state.pending = "";
+				}
+				state.flushed += outText;
+				return outText;
+			}
+			const end = closeMatch.index + closeMatch[0].length;
+			const block = state.pending.slice(0, end);
+			const dsmlCalls = parseDsmlBlock(block);
+			if (dsmlCalls.length > 0) {
+				for (const call of dsmlCalls) {
+					const ids = mintToolCallIds();
+					calls.push({ ...ids, ...call });
+				}
+			} else {
+				// Not parseable: keep it visible as text.
+				outText += block;
+			}
+			state.pending = state.pending.slice(end);
+			continue;
+		}
 		const scanned = scanToolBlock(state.pending, openMatch[0].length);
 		if (scanned === null) {
+			// Incomplete block or prose: hold everything from the
+			// opener; the final flush decides (unclosed/malformed
+			// blocks become text for self-correction).
 			if (final) {
-				// Unclosed / malformed fence at stream end: keep it visible
-			// as text for self-correction.
 				outText += state.pending;
 				state.pending = "";
 			}
-			break;
+			state.flushed += outText;
+			return outText;
 		}
-		const call = parseToolBlock(scanned.payload);
+		const { payload, end } = scanned;
+		const consumed = state.pending.slice(0, end);
+		const call = parseToolBlock(payload);
 		if (call) {
 			const ids = mintToolCallIds();
 			calls.push({ ...ids, ...call });
 		} else {
 			// Not a valid call: keep it visible as text.
-			outText += state.pending.slice(0, scanned.end);
+			outText += consumed;
 		}
-		state.pending = state.pending.slice(scanned.end);
+		state.pending = state.pending.slice(end);
 	}
-	state.flushed += outText;
-	return outText;
 }
 
 /**

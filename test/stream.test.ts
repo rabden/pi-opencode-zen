@@ -703,6 +703,56 @@ test("chat rewriter: finish_reason on the final content chunk keeps that content
 	assert.ok(finish, "finish_reason overridden to tool_calls");
 });
 
+test("deepseek DSML native tool markup becomes real tool calls (session regression)", async () => {
+	// Captured verbatim from session 01a145ad: deepseek ignored the fence
+	// protocol and emitted its native DSML markup as text.
+	const { harvestToolBlocks } = await import("../stream.ts");
+	const B = "\uFF5C\uFF5CDSML\uFF5C\uFF5C";
+	const dsml = [
+		`<${B} calls>`,
+		`<${B} invoke name="bash">`,
+		`<${B} parameter name="command" string="true">cd /disk2/desktop/extensions-A && find src -type f | sort</${B} parameter>`,
+		`</${B} invoke>`,
+		`<${B} invoke name="read">`,
+		`<${B} parameter name="path" string="true">/disk2/desktop/extensions-A/architecture.md</${B} parameter>`,
+		`</${B} invoke>`,
+		`</${B} calls>`,
+	].join("\n");
+	const { cleanedText, calls } = harvestToolBlocks(dsml);
+	assert.equal(calls.length, 2, "both invokes harvested");
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: "cd /disk2/desktop/extensions-A && find src -type f | sort" });
+	assert.equal(calls[1].name, "read");
+	assert.deepEqual(JSON.parse(calls[1].arguments), { path: "/disk2/desktop/extensions-A/architecture.md" });
+	assert.equal(cleanedText.trim(), "", "markup fully consumed");
+	// Prose mentioning DSML stays untouched.
+	const prose = harvestToolBlocks("DSML is deepseek's tool dialect.");
+	assert.equal(prose.calls.length, 0);
+	assert.equal(prose.cleanedText, "DSML is deepseek's tool dialect.");
+});
+
+test("DSML streamed through chat chunks reaches pi as native toolCalls", async () => {
+	const { wrapZenChatResponse } = await import("../stream.ts");
+	const B = "\uFF5C\uFF5CDSML\uFF5C\uFF5C";
+	const parts = [
+		`Exploring.\n<${B} calls>\n<${B} invoke name="`,
+		`bash">\n<${B} parameter name="command" string="true">echo dsml</${B} parameter>\n</${B} invoke>\n</${B} calls>`,
+	];
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "cd", object: "chat.completion.chunk", created: 1, model: "deepseek-v4.1-flash-free", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	const frames = parts.map((p) => mk({ content: p })).join("") + mk({}, "stop") + `data: ${JSON.stringify({ id: "cd", choices: [], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 } })}\n\n` + "data: [DONE]\n\n";
+	const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frames)); c.close(); } });
+	const res = wrapZenChatResponse(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+	const out = await res.text();
+	assert.ok(!out.includes("DSML"), "no DSML leak");
+	const parsed = out.split("\n\n").filter((f) => Boolean(f) && f !== "data: [DONE]").map((f) => JSON.parse(f.replace(/^data: /, "")));
+	const call = parsed.find((p) => Array.isArray(p.choices?.[0]?.delta?.tool_calls));
+	assert.ok(call, "native tool_calls emitted");
+	assert.equal(call.choices[0].delta.tool_calls[0].function.name, "bash");
+	assert.deepEqual(JSON.parse(call.choices[0].delta.tool_calls[0].function.arguments), { command: "echo dsml" });
+	assert.equal(parsed.find((p) => p.choices?.[0]?.finish_reason === "tool_calls") !== undefined, true);
+});
+
 test("non-SSE responses are not mangled by the rewriter path (sanity)", async () => {
 	// wrapZenSseResponse is only called for SSE bodies by index.ts; verify it
 	// still behaves when handed a JSON body by mistake: frames without data
