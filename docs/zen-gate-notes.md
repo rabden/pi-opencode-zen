@@ -181,7 +181,35 @@ Expected rotations to watch: new prompt wording, UA version bumps, the
 2-item input budget, marker-role requirements, and per-session
 registration (currently absent — ids are client-minted).
 
-## 7. Thinking levels / reasoning effort (probed 2026-10-15)
+## 7. Protocol routing & automatic fallback (probed 2026-10-16)
+
+Rule 1 above is outdated: the free tier is now split across BOTH
+endpoints per model — `muse-spark-*-contributor-free` on
+`/zen/v1/responses`, every other `-free` id on
+`/zen/v1/chat/completions` (glm-5.3-flash-free and
+deepseek-v4.1-flash-free verified 200; the v2 console docs publish the
+same per-model endpoint table). Requesting the wrong endpoint answers
+`400 ModelProtocolUnsupported` — or, when extra Responses fields are
+present, a generic `400 Request validation failed`.
+
+No machine-readable endpoint metadata exists (`/zen/v1/models` and
+`/inference/v1/models` return bare ids; models.dev has no per-model
+endpoint field), so the extension (>= 0.3.0):
+
+- registers chat-native models with api `openai-completions` (provider
+  api map; metadata resolves exact id → paid sibling → family rules →
+  chat default for unknown frees),
+- and self-heals mistakes: a 400 mismatch triggers a retry on the
+  other endpoint with the body translated and the stream
+  cross-translated (chat↔responses synthesizers); the learned protocol
+  is cached per model for the session.
+
+Watch for: `jev-*-free` (System One, excluded), deprecated ids (410
+with a `replacement` hint), and models listed in docs before their
+endpoint is live (ll-alpha-free answered 422 "Endpoint is unavailable"
+on 2026-10-16).
+
+## 8. Thinking levels / reasoning effort (probed 2026-10-15)
 
 The `/responses` endpoint validates `reasoning.effort` per model and
 rejects unsupported values with a 400 that names the allowed set —

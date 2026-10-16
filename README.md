@@ -5,10 +5,13 @@
 OpenCode Zen gives away large daily quotas on strong models, but the
 free tier is gated to the official OpenCode client: point any other
 tool at `https://opencode.ai/zen/v1` and you get `403 FreeTierError`.
-Through this provider, the usable free model is
+Through this provider the free catalog works end to end:
 `muse-spark-1.3-contributor-free` (Responses protocol, reasoning from
-`minimal` to `max`); the other `-free` ids are chat-completions-native
-and unusable on `/responses`, and `exo-free` is deprecated.
+`minimal` to `max`) plus the chat-completions-native frees
+(`glm-5.3-flash-free`, `deepseek-v4.1-flash-free`, `space-bunny-free`,
+…), each routed to its own endpoint. New models with unknown endpoints
+self-heal: a protocol mismatch is retried on the other endpoint
+automatically. `exo-free`/`mimo-v2.5-free` are deprecated.
 
 This extension reverse-engineers that gate and satisfies it from inside
 Pi — so the free models show up in `/model` like any other provider, and
