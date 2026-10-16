@@ -1,6 +1,6 @@
 {
   "name": "@rabden/pi-opencode-zen",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Pi extension: OpenCode Zen free models (Responses endpoint) with stream-translated tool calling",
   "type": "module",
   "license": "MIT",

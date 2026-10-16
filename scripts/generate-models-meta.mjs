@@ -45,6 +45,7 @@ for (const models of Object.values(raw)) {
 		if (typeof m.contextWindow === "number") meta.contextWindow = m.contextWindow;
 		if (typeof m.maxTokens === "number") meta.maxTokens = m.maxTokens;
 		if (m.thinkingLevelMap) meta.thinkingLevelMap = m.thinkingLevelMap;
+		if (m.compat) meta.compat = m.compat;
 		const override = OVERRIDES[m.id];
 		entries[m.id] = override ? { ...meta, ...override } : meta;
 	}

@@ -50,6 +50,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"off": null,
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true
 		}
 	},
 	"claude-fable-5-1": {
@@ -82,6 +86,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"off": null,
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true
 		}
 	},
 	"claude-haiku-4-5": {
@@ -149,6 +157,11 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"claude-opus-4-5": {
@@ -206,6 +219,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"maxTokens": 128000,
 		"thinkingLevelMap": {
 			"max": "max"
+		},
+		"compat": {
+			"forceAdaptiveThinking": true
 		}
 	},
 	"claude-opus-4-7": {
@@ -237,6 +253,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"claude-opus-4-8": {
@@ -268,6 +288,11 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"claude-opus-5": {
@@ -299,6 +324,11 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"claude-opus-5-5": {
@@ -330,6 +360,11 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"claude-sonnet-4": {
@@ -432,6 +467,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"maxTokens": 64000,
 		"thinkingLevelMap": {
 			"max": "max"
+		},
+		"compat": {
+			"forceAdaptiveThinking": true
 		}
 	},
 	"claude-sonnet-5": {
@@ -463,6 +501,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"forceAdaptiveThinking": true
 		}
 	},
 	"claude-sonnet-5-5": {
@@ -494,6 +535,11 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 		"thinkingLevelMap": {
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsMidConvoSystemMessages": true,
+			"forceAdaptiveThinking": true,
+			"supportsTemperature": false
 		}
 	},
 	"qwen3.5-plus": {
@@ -575,7 +621,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0.2
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"allowEmptySignature": true
+		}
 	},
 	"gemini-3-flash": {
 		"name": "Gemini 3 Flash",
@@ -838,6 +887,42 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"max": null
 		}
 	},
+	"gemini-4-argon": {
+		"name": "Gemini 4 Argon",
+		"api": "google-generative-ai",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"inputLimits": {
+			"images": {
+				"resize": {
+					"maxWidth": 2000,
+					"maxHeight": 2000,
+					"maxBytes": 4718592,
+					"jpegQuality": 80
+				}
+			}
+		},
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.1,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 65536,
+		"thinkingLevelMap": {
+			"off": null,
+			"minimal": null,
+			"low": "low",
+			"medium": "medium",
+			"high": "high",
+			"xhigh": null,
+			"max": null
+		}
+	},
 	"big-pickle": {
 		"name": "Big Pickle",
 		"api": "openai-completions",
@@ -852,7 +937,44 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,
-		"maxTokens": 32000
+		"maxTokens": 32000,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
+	},
+	"cat-jam-free": {
+		"name": "Cat Jam Free",
+		"api": "openai-completions",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 262144,
+		"maxTokens": 131072,
+		"thinkingLevelMap": {
+			"off": null,
+			"minimal": null,
+			"low": "low",
+			"medium": "medium",
+			"high": "high",
+			"xhigh": "xhigh",
+			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"deepseek-v4-flash": {
 		"name": "DeepSeek V4 Flash",
@@ -877,6 +999,14 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"supportsLongCacheRetention": false,
+			"requiresReasoningContentOnAssistantMessages": true
 		}
 	},
 	"deepseek-v4-flash-vision-exp": {
@@ -913,6 +1043,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"requiresReasoningContentOnAssistantMessages": true
 		}
 	},
 	"deepseek-v4-pro": {
@@ -938,6 +1075,14 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"supportsLongCacheRetention": false,
+			"requiresReasoningContentOnAssistantMessages": true
 		}
 	},
 	"deepseek-v4.1-flash": {
@@ -974,10 +1119,17 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"requiresReasoningContentOnAssistantMessages": true
 		}
 	},
-	"exo-free": {
-		"name": "Exo Free",
+	"deepseek-v4.1-flash-free": {
+		"name": "DeepSeek V4.1 Flash Free",
 		"api": "openai-completions",
 		"reasoning": true,
 		"input": [
@@ -1000,16 +1152,23 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheRead": 0,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1048576,
-		"maxTokens": 131072,
+		"contextWindow": 200000,
+		"maxTokens": 32000,
 		"thinkingLevelMap": {
 			"off": null,
 			"minimal": null,
-			"low": null,
+			"low": "low",
 			"medium": null,
 			"high": "high",
 			"xhigh": null,
-			"max": null
+			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"requiresReasoningContentOnAssistantMessages": true
 		}
 	},
 	"glm-5": {
@@ -1026,7 +1185,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 204800,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"glm-5.1": {
 		"name": "GLM-5.1",
@@ -1042,7 +1207,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 204800,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"glm-5.2": {
 		"name": "GLM-5.2",
@@ -1067,6 +1238,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"glm-5.3": {
@@ -1092,6 +1269,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"glm-5.3-flash": {
@@ -1128,6 +1311,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"kimi-k2.5": {
@@ -1155,7 +1344,14 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 65536
+		"maxTokens": 65536,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"supportsLongCacheRetention": false
+		}
 	},
 	"kimi-k2.6": {
 		"name": "Kimi K2.6",
@@ -1182,7 +1378,16 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 65536
+		"maxTokens": 65536,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"thinkingFormat": "deepseek",
+			"supportsReasoningEffort": false,
+			"maxTokensField": "max_tokens",
+			"supportsLongCacheRetention": false
+		}
 	},
 	"kimi-k2.7-code": {
 		"name": "Kimi K2.7 Code",
@@ -1209,7 +1414,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 262144
+		"maxTokens": 262144,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"kimi-k3": {
 		"name": "Kimi K3",
@@ -1245,39 +1456,15 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": null,
 			"xhigh": null,
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"supportsMidConvoSystemMessages": true,
+			"supportsMidConvoToolAdditions": true
 		}
-	},
-	"ling-3.0-flash-fin-free": {
-		"name": "Ling 3.0 Flash Fin Free",
-		"api": "openai-completions",
-		"reasoning": true,
-		"input": [
-			"text"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 262144,
-		"maxTokens": 32768
-	},
-	"ling-3.1-flash-free": {
-		"name": "Ling 3.1 Flash Free",
-		"api": "openai-completions",
-		"reasoning": true,
-		"input": [
-			"text"
-		],
-		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
-			"cacheWrite": 0
-		},
-		"contextWindow": 262144,
-		"maxTokens": 32768
 	},
 	"longcat-2.5-preview-free": {
 		"name": "LongCat 2.5 Preview Free",
@@ -1304,7 +1491,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"mimo-v2.6-flash-free": {
 		"name": "MiMo-V2.6-Flash Free",
@@ -1331,7 +1524,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,
-		"maxTokens": 32000
+		"maxTokens": 32000,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"minimax-m2.5": {
 		"name": "MiniMax-M2.5",
@@ -1347,7 +1546,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 204800,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"minimax-m2.7": {
 		"name": "MiniMax-M2.7",
@@ -1363,7 +1568,14 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 204800,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens",
+			"supportsLongCacheRetention": false
+		}
 	},
 	"minimax-m3": {
 		"name": "MiniMax-M3",
@@ -1390,7 +1602,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 512000,
-		"maxTokens": 128000
+		"maxTokens": 128000,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"mistral-large-4": {
 		"name": "Mistral Large 4",
@@ -1426,6 +1644,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"nemotron-3-ultra-free": {
@@ -1442,7 +1666,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
-		"maxTokens": 128000
+		"maxTokens": 128000,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"nemotron-3.5-lightning-free": {
 		"name": "Nemotron 3.5 Lightning Free",
@@ -1458,7 +1688,55 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
-		"maxTokens": 262144
+		"maxTokens": 262144,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
+	},
+	"nemotron-3.5-super-vl-free": {
+		"name": "Nemotron 3.5 Super VL Free",
+		"api": "openai-completions",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"inputLimits": {
+			"images": {
+				"resize": {
+					"maxWidth": 2000,
+					"maxHeight": 2000,
+					"maxBytes": 4718592,
+					"jpegQuality": 80
+				}
+			}
+		},
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"thinkingLevelMap": {
+			"off": "none",
+			"minimal": "minimal",
+			"low": "low",
+			"medium": "medium",
+			"high": "high",
+			"xhigh": "xhigh",
+			"max": null
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"qwen3.8-max": {
 		"name": "Qwen3.8 Max",
@@ -1485,7 +1763,13 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"cacheWrite": 2.5
 		},
 		"contextWindow": 262144,
-		"maxTokens": 131072
+		"maxTokens": 131072,
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
+		}
 	},
 	"space-bunny-free": {
 		"name": "Space Bunny Free",
@@ -1521,6 +1805,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"step-5-preview-free": {
@@ -1557,6 +1847,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsStrictMode": true,
+			"maxTokensField": "max_tokens"
 		}
 	},
 	"gpt-5": {
@@ -1593,6 +1889,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5-codex": {
@@ -1629,6 +1929,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5-nano": {
@@ -1665,6 +1969,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.1": {
@@ -1701,6 +2009,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.1-codex": {
@@ -1737,6 +2049,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.1-codex-max": {
@@ -1773,6 +2089,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.1-codex-mini": {
@@ -1809,6 +2129,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.2": {
@@ -1845,6 +2169,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.2-codex": {
@@ -1881,6 +2209,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.3-codex": {
@@ -1917,6 +2249,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.4": {
@@ -1962,6 +2298,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.4-mini": {
@@ -1998,6 +2340,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.4-nano": {
@@ -2034,6 +2382,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.4-pro": {
@@ -2070,6 +2422,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.5": {
@@ -2115,6 +2473,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.5-pro": {
@@ -2151,6 +2515,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true
 		}
 	},
 	"gpt-5.6-luna": {
@@ -2196,6 +2564,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.6-sol": {
@@ -2241,6 +2615,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-5.6-terra": {
@@ -2286,6 +2666,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-6-astra": {
@@ -2331,6 +2717,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-6-luna": {
@@ -2376,6 +2768,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-6-sol": {
@@ -2421,6 +2819,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"gpt-6.1-sol": {
@@ -2466,6 +2870,12 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsOpenAIGrammarTools": true,
+			"supportsMidConvoSystemMessages": true,
+			"supportsAdditionalTools": true
 		}
 	},
 	"grok-4.5": {
@@ -2511,6 +2921,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": null,
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	},
 	"grok-4.6": {
@@ -2556,6 +2969,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	},
 	"grok-4.7": {
@@ -2601,6 +3017,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	},
 	"grok-build-0.1": {
@@ -2634,6 +3053,10 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"minimal": null,
 			"low": null,
 			"medium": null
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession",
+			"supportsReasoningEffort": false
 		}
 	},
 	"muse-spark-1.2": {
@@ -2670,6 +3093,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	},
 	"muse-spark-1.3": {
@@ -2706,6 +3132,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	},
 	"muse-spark-1.3-contributor-free": {
@@ -2742,6 +3171,9 @@ export const ZEN_MODEL_META: Record<string, ZenModelMeta> = {
 			"high": "high",
 			"xhigh": "xhigh",
 			"max": "max"
+		},
+		"compat": {
+			"sessionAffinityFormat": "openai-nosession"
 		}
 	}
 };

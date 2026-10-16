@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { wrapZenSseResponse } from "../stream.ts";
+import { createChatToResponsesRewriter, wrapWithFrameRewriter, wrapZenChatResponse, wrapZenSseResponse } from "../stream.ts";
 
 const OPENAI_DIST =
 	process.env.OPENAI_DIST ??
@@ -126,11 +126,171 @@ async function main(): Promise<void> {
 	console.log("ok  e2e: OpenAI SDK streams the rewritten SSE as native tool calls");
 }
 
+async function chatMain(): Promise<void> {
+	const cmd = JSON.stringify({ command: "echo chat-ok" });
+	const fence = "```";
+	const full = `Checking.\n${fence}tool\n{"name": "bash", "arguments": ${cmd}}\n${fence}\nDone.`;
+	const pieces = ["Chec", `king.\n${fence}`, `tool\n{"name": "bash", "argu`, `ments": ${cmd}}\n${fence}\nDone.`];
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "c3", object: "chat.completion.chunk", created: 1, model: "glm-5.3-flash-free", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	let body = "";
+	for (const piece of pieces) body += mk({ content: piece });
+	body += mk({}, "stop");
+	body += `data: ${JSON.stringify({ id: "c3", object: "chat.completion.chunk", created: 1, model: "glm-5.3-flash-free", choices: [], usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 } })}\n\n`;
+	body += "data: [DONE]\n\n";
+
+	const server: Server = createServer((req, res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		let i = 0;
+		const timer = setInterval(() => {
+			if (i >= body.length) { clearInterval(timer); res.end(); return; }
+			res.write(body.slice(i, i + 13));
+			i += 13;
+		}, 1);
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const port = (server.address() as { port: number }).port;
+
+	const baseFetch = globalThis.fetch.bind(globalThis);
+	globalThis.fetch = (async (input: unknown, init?: RequestInit): Promise<Response> => {
+		const response = await baseFetch(input as RequestInfo | URL, init);
+		if (
+			response.ok &&
+			response.body !== null &&
+			(response.headers.get("content-type") ?? "").includes("text/event-stream") &&
+			String(input).includes("/chat/completions")
+		) {
+			return wrapZenChatResponse(response);
+		}
+		return response;
+	}) as typeof globalThis.fetch;
+
+	const { default: OpenAI } = (await import(OPENAI_DIST)) as { default: new (opts: Record<string, unknown>) => any };
+	const client = new OpenAI({ apiKey: "public", baseURL: `http://127.0.0.1:${port}/v1`, dangerouslyAllowBrowser: true });
+	const stream = await client.chat.completions.create({ model: "glm-5.3-flash-free", messages: [{ role: "user", content: "hi" }], stream: true });
+	const text: string[] = [];
+	const calls: Array<{ name: string; arguments: string }> = [];
+	let finish: string | null = null;
+	let usage: unknown;
+	for await (const chunk of stream) {
+		const choice = chunk.choices?.[0];
+		if (choice?.delta?.content) text.push(choice.delta.content);
+		if (choice?.delta?.tool_calls) {
+			for (const tc of choice.delta.tool_calls) {
+				if (tc.function?.name) calls.push({ name: tc.function.name, arguments: tc.function.arguments ?? "" });
+				else if (calls.length > 0 && tc.function?.arguments) calls[calls.length - 1].arguments += tc.function.arguments;
+			}
+		}
+		if (choice?.finish_reason) finish = choice.finish_reason;
+		if (chunk.usage) usage = chunk.usage;
+	}
+	assert.ok(!text.join("").includes("```"), "no fence in streamed text");
+	assert.equal(text.join("").trim(), "Checking.\n\nDone.");
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: "echo chat-ok" });
+	assert.equal(finish, "tool_calls");
+	assert.deepEqual(usage, { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 });
+
+	server.close();
+	globalThis.fetch = baseFetch;
+	console.log("ok  e2e: OpenAI SDK chat.completions streams the rewritten chat chunks natively");
+}
+
+async function fallbackMain(): Promise<void> {
+	// Mock Zen: /responses rejects with ModelProtocolUnsupported; the chat
+	// endpoint serves the model. The extension's fallback logic retries the
+	// other endpoint and cross-translates so the Responses-speaking client
+	// still gets a native stream.
+	const cmd = JSON.stringify({ command: "echo fb" });
+	const fence = "```";
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "cf", object: "chat.completion.chunk", created: 2, model: "mystery-free", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	let chatBody = mk({ content: "Falling back.\n" + fence + "tool\n" + '{"name": "bash", "arguments": ' });
+	chatBody += mk({ content: cmd + "}" + "\n" + fence }, "stop");
+	chatBody += mk({}, null);
+	chatBody += `data: ${JSON.stringify({ id: "cf", choices: [], usage: { prompt_tokens: 9, completion_tokens: 2, total_tokens: 11 } })}\n\n`;
+	chatBody += "data: [DONE]\n\n";
+
+	const server: Server = createServer((req, res) => {
+		if (req.url?.includes("/responses")) {
+			res.writeHead(400, { "content-type": "application/json" });
+			res.end(JSON.stringify({ type: "error", error: { type: "ModelProtocolUnsupported", message: "Model does not support this protocol." } }));
+			return;
+		}
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		let i = 0;
+		const timer = setInterval(() => {
+			if (i >= chatBody.length) { clearInterval(timer); res.end(); return; }
+			res.write(chatBody.slice(i, i + 11));
+			i += 11;
+		}, 1);
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const port = (server.address() as { port: number }).port;
+
+	const learned = new Map<string, "chat" | "responses">();
+	const baseFetch = globalThis.fetch.bind(globalThis);
+	globalThis.fetch = (async (input: unknown, init?: RequestInit): Promise<Response> => {
+		const url = String(input);
+		let response = await baseFetch(input as RequestInfo | URL, init);
+		if (response.status === 400 && typeof init?.body === "string") {
+			const parsed = JSON.parse(init.body) as Record<string, unknown>;
+			const errText = await response.clone().text();
+			if (errText.includes("ModelProtocolUnsupported") && typeof parsed.model === "string") {
+				const retryUrl = url.replace("/responses", "/chat/completions");
+				learned.set(parsed.model, "chat");
+				const retryBody = JSON.stringify({ ...parsed, messages: parsed.input, input: undefined, max_tokens: parsed.max_output_tokens, max_output_tokens: undefined });
+				response = await baseFetch(retryUrl, { ...init, body: retryBody });
+				if (response.ok && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+					const rewriter = createChatToResponsesRewriter(String(parsed.model));
+					return wrapWithFrameRewriter(response, rewriter.feedFrame);
+				}
+			}
+		}
+		return response;
+	}) as typeof globalThis.fetch;
+
+	const { default: OpenAI } = (await import(OPENAI_DIST)) as { default: new (opts: Record<string, unknown>) => any };
+	const client = new OpenAI({ apiKey: "public", baseURL: `http://127.0.0.1:${port}/v1`, dangerouslyAllowBrowser: true });
+	const stream = await client.responses.create({ model: "mystery-free", input: "hi", stream: true });
+	const text: string[] = [];
+	const calls: Array<{ name: string; arguments: string }> = [];
+	let usage: unknown;
+	for await (const event of stream) {
+		if (event.type === "response.output_text.delta") text.push(event.delta);
+		else if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
+			calls.push({ name: event.item.name, arguments: "" });
+		} else if (event.type === "response.function_call_arguments.done") {
+			if (calls.length > 0) calls[calls.length - 1].arguments = event.arguments;
+		} else if (event.type === "response.completed") usage = event.response.usage;
+	}
+	assert.ok(!text.join("").includes("```"), "no fence leaks");
+	assert.equal(text.join("").trim(), "Falling back.");
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: "echo fb" });
+	assert.deepEqual(usage, { input_tokens: 9, output_tokens: 2, total_tokens: 11 });
+	assert.equal(learned.get("mystery-free"), "chat", "protocol learned and cached");
+
+	server.close();
+	globalThis.fetch = baseFetch;
+	console.log("ok  e2e: protocol fallback retries the other endpoint and cross-translates");
+}
+
 const openai = await loadOpenAI();
 if (openai === undefined) {
 	console.log("skip e2e: OpenAI SDK not importable (set OPENAI_DIST to run)");
 } else {
 	await main().catch((error) => {
+		console.error(error instanceof Error ? error.stack : String(error));
+		process.exit(1);
+	});
+	await chatMain().catch((error) => {
+		console.error(error instanceof Error ? error.stack : String(error));
+		process.exit(1);
+	});
+	await fallbackMain().catch((error) => {
 		console.error(error instanceof Error ? error.stack : String(error));
 		process.exit(1);
 	});

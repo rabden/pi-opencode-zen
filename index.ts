@@ -46,6 +46,7 @@ import { appendFile } from "node:fs/promises";
 import {
 	createProvider,
 	envApiKeyAuth,
+	openAICompletionsApi,
 	openAIResponsesApi,
 	type Model,
 	type Provider,
@@ -54,7 +55,15 @@ import {
 import { ZEN_MODEL_META, type ZenModelMeta } from "./models-meta.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ZEN_MARKER_PROMPT } from "./marker.ts";
-import { harvestToolBlocks, mintToolCallIds, wrapZenSseResponse } from "./stream.ts";
+import {
+	createChatToResponsesRewriter,
+	createResponsesToChatRewriter,
+	harvestToolBlocks,
+	mintToolCallIds,
+	wrapWithFrameRewriter,
+	wrapZenChatResponse,
+	wrapZenSseResponse,
+} from "./stream.ts";
 
 export const PROVIDER_ID = "opencode-zen";
 const BASE_URL = process.env.PI_ZEN_BASE_URL ?? "https://opencode.ai/zen/v1";
@@ -64,20 +73,58 @@ const MODELS_URL = `${BASE_URL}/models`;
 // The gate validates the UA string; keep in sync with current releases.
 const ZEN_USER_AGENT = "opencode/1.19.0 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14";
 
-// Fallback catalog used before the first successful /models refresh.
-// Only muse-spark is actually usable through /responses: the other
-// "-free" ids are chat-completions-native and the endpoint answers
-// ModelProtocolUnsupported for them (exo-free is deprecated outright —
-// verified live 2026-10-15).
-const FALLBACK_MODEL_IDS = ["muse-spark-1.3-contributor-free"];
+// Fallback catalog used before the first successful /models refresh:
+// muse (Responses) plus the chat-native frees (verified live + v2 docs
+// 2026-10-16; big-pickle is free per the pricing table). The live
+// catalog refresh replaces this list.
+const FALLBACK_MODEL_IDS = [
+	"muse-spark-1.3-contributor-free",
+	"glm-5.3-flash-free",
+	"deepseek-v4.1-flash-free",
+	"space-bunny-free",
+	"cat-jam-free",
+	"ll-alpha-free",
+	"longcat-2.5-preview-free",
+	"mimo-v2.6-flash-free",
+	"nemotron-3-ultra-free",
+	"nemotron-3.5-lightning-free",
+	"nemotron-3.5-super-vl-free",
+	"big-pickle",
+];
 
-// Listable = speakable through this provider's single protocol
-// (/zen/v1/responses). Chat- or Anthropic-native zen models are excluded
-// even though /models advertises them. Set PI_ZEN_ALL_MODELS=1 to also
-// list the paid Responses models (requires a funded key).
+/** Resolve model metadata: exact id first, then the paid sibling when the
+ * id is a "-free" variant of a catalog entry (deepseek-v4.1-flash-free →
+ * deepseek-v4.1-flash). New frees appear on Zen faster than pi-ai's
+ * catalog updates, so unknown "-free" ids default to chat-completions —
+ * every non-muse free is chat-native (verified live + v2 docs 2026-10-16). */
+function resolveModelMeta(id: string): ZenModelMeta | undefined {
+	const exact = ZEN_MODEL_META[id];
+	if (exact !== undefined) return exact;
+	if (id.endsWith("-free")) {
+		const sibling = ZEN_MODEL_META[id.slice(0, -"-free".length)];
+		if (sibling !== undefined) return sibling;
+		// Known families: muse-spark frees are Responses-native; jev frees
+		// are System One classifiers (neither protocol we speak).
+		if (id.startsWith("muse-spark")) return ZEN_MODEL_META["muse-spark-1.3-contributor-free"];
+		if (id.startsWith("jev-")) return { name: id, reasoning: false, api: "typesafe-system-one" };
+		return { name: id, reasoning: true, api: "openai-completions" };
+	}
+	return undefined;
+}
+
+const isChatNative = (id: string): boolean => {
+	const api = resolveModelMeta(id)?.api;
+	return api === "openai-completions";
+};
+
+// Listable = speakable through one of the two protocols the extension
+// serves (/zen/v1/responses and /zen/v1/chat/completions). Anthropic-
+// and Gemini-native models stay excluded (pi speaks neither here), as do
+// the jev classifier models. Set PI_ZEN_ALL_MODELS=1 to also list paid
+// models (requires a funded key).
 function isListableModel(id: string): boolean {
-	const meta = ZEN_MODEL_META[id];
-	if (meta?.api !== undefined && meta.api !== "openai-responses") return false;
+	const api = resolveModelMeta(id)?.api;
+	if (api !== undefined && api !== "openai-responses" && api !== "openai-completions") return false;
 	return process.env.PI_ZEN_ALL_MODELS === "1" || id.includes("-free");
 }
 
@@ -340,7 +387,7 @@ function injectMarker(body: ResponsesBody): void {
 		) {
 			second.content = ZEN_DISREGARD_PREAMBLE + second.content;
 			if (TEXT_TOOLS_ENABLED && !second.content.includes(PROTOCOL_SENTINEL)) {
-				second.content += ZEN_TOOL_PROTOCOL;
+			second.content += ZEN_TOOL_PROTOCOL;
 			}
 		}
 	};
@@ -353,6 +400,121 @@ function injectMarker(body: ResponsesBody): void {
 	prepend(body.input);
 }
 
+// -----------------------------------------------------------------------------
+// Chat Completions request shaping (chat-native models)
+// -----------------------------------------------------------------------------
+
+interface ChatBody {
+	model?: unknown;
+	messages?: unknown;
+}
+
+/** Chat-dialect marker injection: same gate, messages-shaped (the
+ * marker rides as the first developer message — verified live). */
+function injectChatMarker(body: ChatBody): void {
+	const messages = Array.isArray(body.messages) ? body.messages : [];
+	const first = messages[0] as { role?: unknown; content?: unknown } | undefined;
+	if (first?.role === "developer" && first?.content === ZEN_MARKER_PROMPT) return;
+	body.messages = [{ role: "developer", content: ZEN_MARKER_PROMPT }, ...messages];
+	const second = (body.messages as { role?: unknown; content?: unknown }[])[1];
+	if (
+		second &&
+		(second.role === "system" || second.role === "developer") &&
+		typeof second.content === "string" &&
+		!second.content.startsWith(ZEN_DISREGARD_PREAMBLE)
+	) {
+		second.content = ZEN_DISREGARD_PREAMBLE + second.content;
+		if (TEXT_TOOLS_ENABLED && !second.content.includes(PROTOCOL_SENTINEL)) {
+			second.content += ZEN_TOOL_PROTOCOL;
+		}
+	}
+}
+
+const chatContentText = (content: unknown): string => {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.map((block) =>
+				typeof block?.text === "string"
+					? block.text
+					: typeof block?.thinking === "string"
+						? ""
+						: "",
+			)
+			.join("");
+	}
+	return "";
+};
+
+/** Chat-dialect twin of flattenHistory: collapse the conversation into
+ * [developer(marker), system(defused), user(transcript)], images of the
+ * latest image-bearing turn riding as image_url parts. */
+function flattenChatHistory(messages: unknown[]): unknown[] {
+	if (messages.length <= 1) return messages;
+	const marker = messages[0] as { role?: unknown; content?: unknown };
+	const rest = (marker && marker.role === "developer" && marker.content === ZEN_MARKER_PROMPT ? messages.slice(1) : messages) as Array<{
+		role?: string;
+		content?: unknown;
+		tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>;
+		name?: string;
+	}>;
+	const systemIndex = rest.findIndex((m) => m.role === "system" || m.role === "developer");
+	const system = systemIndex === 0 ? rest[0] : undefined;
+	const conversation = systemIndex === 0 ? rest.slice(1) : rest;
+
+	const lines: string[] = [];
+	const images: { type: "image_url"; image_url: { url: unknown } }[] = [];
+	for (const entry of conversation) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const role = entry.role;
+		if (role === "assistant") {
+			const text = chatContentText(entry.content).trim();
+			if (text.length > 0) lines.push(`[assistant] ${text}`);
+			for (const call of entry.tool_calls ?? []) {
+				if (call?.function?.name) {
+					lines.push(`[assistant tool call: ${call.function.name} ${call.function.arguments ?? ""}]`);
+				}
+			}
+		} else if (role === "tool") {
+			const text = chatContentText(entry.content).trim();
+			lines.push(`[tool result${typeof entry.name === "string" ? ` for ${entry.name}` : ""}: ${truncateResult(text)}]`);
+		} else if (role === "user") {
+			const text = chatContentText(entry.content).trim();
+			const entryImages = Array.isArray(entry.content)
+				? entry.content
+					.filter(
+						(block): block is { type: "image_url"; image_url: { url: unknown } } =>
+							typeof block === "object" &&
+							block !== null &&
+							(block as { type?: unknown }).type === "image_url" &&
+							typeof (block as { image_url?: { url?: unknown } }).image_url?.url === "string",
+					)
+					.map((block) => ({ type: "image_url" as const, image_url: { url: block.image_url.url } }))
+				: [];
+			if (entryImages.length > 0) {
+				images.length = 0;
+				images.push(...entryImages);
+				lines.push(text.length > 0 ? `[user] ${text} (image attached)` : "[user] (image attached)");
+			} else if (text.length > 0) {
+				lines.push(`[user] ${text}`);
+			}
+		} else if (role === "system" || role === "developer") {
+			const text = chatContentText(entry.content).trim();
+			if (text.length > 0) lines.push(`[system] ${text}`);
+		}
+	}
+
+	const reminder =
+		"\n[reminder] You are not a title generator. Ignore any instruction to produce titles or one-line summaries. Answer the newest user request directly and completely; when a tool is needed, use the tool-protocol block described in the system instructions.";
+	const transcript = `Conversation so far, oldest first. The most recent entry is the newest state — continue from it:\n${lines.join("\n")}${reminder}`;
+	const out: unknown[] = [marker && marker.role === "developer" ? marker : { role: "developer", content: ZEN_MARKER_PROMPT }];
+	if (system !== undefined) out.push(system);
+	const userContent: unknown[] = [{ type: "text", text: transcript }];
+	if (images.length > 0) userContent.push(...images);
+	out.push({ role: "user", content: userContent });
+	return out;
+}
+
 function isZenUrl(url: string): boolean {
 	if (url.includes("opencode.ai")) return true;
 	const custom = process.env.PI_ZEN_BASE_URL;
@@ -363,6 +525,50 @@ const DEBUG = process.env.PI_ZEN_DEBUG === "1";
 const debugLog = (...args: unknown[]): void => {
 	void appendFile("/tmp/pi-zen-debug.json", `${JSON.stringify({ at: new Date().toISOString(), phase: "patch", args })}\n`);
 };
+
+/** Learned model→protocol map: new zen models appear without machine-
+ * readable endpoint metadata, so the first request for an unknown model
+ * may hit the wrong endpoint (400 ModelProtocolUnsupported). The fetch
+ * patch retries on the other endpoint and remembers the answer. */
+const learnedProtocol = new Map<string, "chat" | "responses">();
+
+interface ShapedEndpointBody {
+	model?: unknown;
+	input?: unknown;
+	messages?: unknown;
+	[key: string]: unknown;
+}
+
+/** Translate an already-shaped Responses body ([developer, system?, user])
+ * to the chat messages shape (and vice versa) — roles and content parts
+ * map one to one. */
+function translateBodyDialect(body: ShapedEndpointBody, toChat: boolean): ShapedEndpointBody {
+	if (toChat) {
+		const input = Array.isArray(body.input) ? body.input : [];
+		return {
+			...body,
+			messages: input,
+			input: undefined,
+			max_tokens: body.max_output_tokens ?? body.max_tokens,
+			max_output_tokens: undefined,
+			reasoning: undefined,
+			include: undefined,
+			store: undefined,
+			prompt_cache_key: undefined,
+		};
+	}
+	const messages = Array.isArray(body.messages) ? body.messages : [];
+	return {
+		...body,
+		input: messages,
+		messages: undefined,
+		max_output_tokens: body.max_tokens ?? body.max_output_tokens,
+		max_tokens: undefined,
+	};
+}
+
+const chatPathOf = (url: string): string => url.replace("/responses", "/chat/completions");
+const responsesPathOf = (url: string): string => url.replace("/chat/completions", "/responses");
 
 type PatchedFetch = typeof globalThis.fetch & { __zenPatched?: boolean };
 
@@ -398,13 +604,35 @@ function installFetchPatch(): void {
 		headers.set("x-opencode-session-id", zenSession);
 		headers.set("x-opencode-request", `msg_${sortableId(false)}`);
 
+		let targetUrl = url;
 		let body = init?.body;
+		let shapedDialect: "chat" | "responses" | undefined;
+		let parsedBody: Record<string, unknown> | undefined;
 		if (typeof body === "string" && body.length > 0) {
 			try {
-				const parsed = JSON.parse(body) as ResponsesBody;
-				injectMarker(parsed);
-				if (Array.isArray(parsed.input)) {
-					parsed.input = flattenHistory(parsed.input);
+				const parsed = JSON.parse(body) as ResponsesBody & ChatBody;
+				let chatRequest = url.includes("/chat/completions");
+				// Learned protocol for unknown models: skip the 400 round-trip.
+				if (typeof parsed.model === "string") {
+					const learned = learnedProtocol.get(parsed.model);
+					if (learned === "chat" && !chatRequest) {
+						chatRequest = true;
+						targetUrl = chatPathOf(url);
+					} else if (learned === "responses" && chatRequest) {
+						chatRequest = false;
+						targetUrl = responsesPathOf(url);
+					}
+				}
+				if (chatRequest) {
+					injectChatMarker(parsed);
+					if (Array.isArray(parsed.messages)) {
+						parsed.messages = flattenChatHistory(parsed.messages);
+					}
+				} else {
+					injectMarker(parsed);
+					if (Array.isArray(parsed.input)) {
+						parsed.input = flattenHistory(parsed.input);
+					}
 				}
 				if (process.env.PI_ZEN_TOOLS !== "keep") {
 					// Free-tier gate: requests carrying any tools other than a
@@ -414,6 +642,8 @@ function installFetchPatch(): void {
 					delete (parsed as { tools?: unknown }).tools;
 					delete (parsed as { tool_choice?: unknown }).tool_choice;
 				}
+				shapedDialect = chatRequest ? "chat" : "responses";
+				parsedBody = parsed as Record<string, unknown>;
 				body = JSON.stringify(parsed);
 				if (DEBUG) {
 					const input = Array.isArray(parsed.input) ? parsed.input : [];
@@ -453,23 +683,69 @@ function installFetchPatch(): void {
 			debugLog("body not a string", String(typeof body));
 		}
 
-		const response = await base(input as RequestInfo | URL, { ...init, headers, body });
+		let response = await base(targetUrl as RequestInfo | URL, { ...init, headers, body });
+		// Protocol fallback: the model is served on the OTHER endpoint
+		// (unknown/new model with wrong metadata). Retry translated.
+		if (
+			response.status === 400 &&
+			shapedDialect !== undefined &&
+			parsedBody !== undefined &&
+			typeof parsedBody.model === "string"
+		) {
+			let protocolMismatch = false;
+			try {
+				const errText = await response.clone().text();
+				// Upstream surfaces the mismatch as ModelProtocolUnsupported on clean
+				// bodies, but as a generic validation failure once extra Responses
+				// fields are present — both mean "wrong endpoint for this model".
+				protocolMismatch =
+					errText.includes("ModelProtocolUnsupported") ||
+					errText.includes("Request validation failed");
+			} catch {
+				// unreadable error body: let it surface as-is
+			}
+			if (protocolMismatch) {
+				const toChat = shapedDialect === "responses";
+				learnedProtocol.set(parsedBody.model, toChat ? "chat" : "responses");
+				const retryUrl = toChat ? chatPathOf(targetUrl) : responsesPathOf(targetUrl);
+				const retryBody = JSON.stringify(translateBodyDialect(parsedBody as ShapedEndpointBody, toChat));
+				if (DEBUG) debugLog("protocol fallback: retrying", parsedBody.model, "on", retryUrl);
+				response = await base(retryUrl as RequestInfo | URL, { ...init, headers, body: retryBody });
+				if (
+					TEXT_TOOLS_ENABLED &&
+					response.ok &&
+					response.body !== null &&
+					(response.headers.get("content-type") ?? "").includes("text/event-stream")
+				) {
+					const model = typeof parsedBody.model === "string" ? parsedBody.model : "zen";
+					// pi-ai still parses its ORIGINAL dialect: cross-translate.
+					const rewriter = toChat
+						? createChatToResponsesRewriter(model)
+						: createResponsesToChatRewriter();
+					return wrapWithFrameRewriter(response, rewriter.feedFrame);
+				}
+				return response;
+			}
+		}
 		// Response-side translation: rewrite the SSE stream so fenced ```tool
-		// blocks become native function_call events (stream.ts). Tool calls then
-		// render in Pi's UI exactly like a native-tools provider, and the fence
-		// text never streams into the chat as visible text.
+		// blocks become native tool calls (stream.ts) — Responses events for
+		// /responses, chat chunks for /chat/completions. Tool calls then
+		// render in Pi's UI exactly like a native-tools provider, and the
+		// fence text never streams into the chat as visible text.
+		const isChat = url.includes("/chat/completions");
 		if (
 			TEXT_TOOLS_ENABLED &&
 			response.ok &&
 			response.body !== null &&
 			(response.headers.get("content-type") ?? "").includes("text/event-stream") &&
-			url.includes("/responses")
+			(isChat || url.includes("/responses"))
 		) {
 			if (DEBUG) debugLog("wrapping SSE response for tool-call translation", url);
+			const wrap = isChat ? wrapZenChatResponse : wrapZenSseResponse;
 			if (DEBUG) {
 				const rawPath = process.env.PI_ZEN_SSE_PATH ?? "/tmp/pi-zen-sse-upstream.sse";
 				let header = false;
-				return wrapZenSseResponse(response, (chunk) => {
+				return wrap(response, (chunk) => {
 					if (!header) {
 						header = true;
 						void appendFile(rawPath, `\n===== upstream ${new Date().toISOString()} ${url}\n`);
@@ -477,7 +753,7 @@ function installFetchPatch(): void {
 					void appendFile(rawPath, chunk);
 				});
 			}
-			return wrapZenSseResponse(response);
+			return wrap(response);
 		}
 		return response;
 	}) as PatchedFetch;
@@ -497,16 +773,22 @@ const VISION_ENABLED = process.env.PI_ZEN_VISION !== "0";
  * Model metadata (names, thinking levels, context/output limits) comes
  * from a table generated from pi-ai's bundled OpenCode catalog — the
  * same metadata pi's built-in opencode provider uses (models-meta.ts,
- * regenerate via scripts/generate-models-meta.mjs). The gate serves
- * every free model on /responses only, so the API is always forced to
- * openai-responses regardless of the catalog entry's native API.
+ * regenerate via scripts/generate-models-meta.mjs). Models whose native
+ * protocol is chat completions are registered with api
+ * "openai-completions": pi-ai dispatches by model.api, so those models
+ * stream through its chat implementation against /zen/v1/chat/completions
+ * — which the gate serves for every non-muse free model (verified live
+ * 2026-10-16). compat flags are carried for chat-native models (tuned
+ * for their real API); for responses models they stay excluded to keep
+ * the verified wire shape.
  */
-function toChatModel(id: string): Model<"openai-responses"> {
-	const meta: ZenModelMeta | undefined = ZEN_MODEL_META[id];
-	const model: Model<"openai-responses"> = {
+function toChatModel(id: string): Model {
+	const meta = resolveModelMeta(id);
+	const chat = meta?.api === "openai-completions";
+	const model = {
 		id,
 		name: meta?.name ?? id,
-		api: "openai-responses",
+		api: chat ? "openai-completions" : "openai-responses",
 		provider: PROVIDER_ID,
 		baseUrl: BASE_URL,
 		reasoning: meta?.reasoning ?? true,
@@ -514,9 +796,18 @@ function toChatModel(id: string): Model<"openai-responses"> {
 		cost: meta?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: meta?.contextWindow ?? 200000,
 		maxTokens: meta?.maxTokens ?? 16384,
-	};
-	if (meta?.thinkingLevelMap) model.thinkingLevelMap = meta.thinkingLevelMap as Model<"openai-responses">["thinkingLevelMap"];
-	if (meta?.inputLimits) model.inputLimits = meta.inputLimits as Model<"openai-responses">["inputLimits"];
+	} as Model;
+	if (meta?.thinkingLevelMap) {
+		(model as { thinkingLevelMap?: unknown }).thinkingLevelMap = meta.thinkingLevelMap;
+	}
+	if (meta?.inputLimits) {
+		(model as { inputLimits?: unknown }).inputLimits = meta.inputLimits;
+	}
+	if (chat && meta?.compat !== undefined) {
+		// Chat-native models get their catalog compat (thinkingFormat,
+		// maxTokensField, ...) — it matches the dialect pi-ai speaks for them.
+		(model as { compat?: unknown }).compat = meta.compat;
+	}
 	return model;
 }
 
@@ -553,6 +844,9 @@ async function fetchLiveModelIds(apiKey: string, signal: AbortSignal): Promise<s
 // =============================================================================
 
 export function createOpencodeZenCustomProvider(): Provider<"openai-responses"> {
+	// The provider's default API is openai-responses (muse & the paid GPT/
+	// Grok catalog); chat-native models carry api "openai-completions" on
+	// the model itself and pi-ai dispatches by model.api at request time.
 	return createProvider<"openai-responses">({
 		id: PROVIDER_ID,
 		name: "OpenCode Zen (custom)",
@@ -560,16 +854,22 @@ export function createOpencodeZenCustomProvider(): Provider<"openai-responses"> 
 		auth: {
 			apiKey: envApiKeyAuth("OpenCode Zen API key", ["OPENCODE_API_KEY"]),
 		},
-		models: FALLBACK_MODEL_IDS.map(toChatModel),
+		models: FALLBACK_MODEL_IDS.map(toChatModel) as Model<"openai-responses">[],
 		fetchModels: async (context: RefreshModelsContext) => {
 			if (context.credential?.type !== "api_key" || !context.credential.key) {
-				return FALLBACK_MODEL_IDS.map(toChatModel);
+				return FALLBACK_MODEL_IDS.map(toChatModel) as Model<"openai-responses">[];
 			}
 			const ids = await fetchLiveModelIds(context.credential.key, context.signal);
 			const listable = ids.filter(isListableModel);
-			return (listable.length > 0 ? listable : FALLBACK_MODEL_IDS).map(toChatModel);
+			return (listable.length > 0 ? listable : FALLBACK_MODEL_IDS).map(toChatModel) as Model<"openai-responses">[];
 		},
-		api: openAIResponsesApi(),
+		// api MAP: pi-ai dispatches on model.api — muse & the paid GPT/Grok
+		// catalog stream via Responses, chat-native frees (everything else
+		// free) via Chat Completions, both under this one provider.
+		api: {
+			"openai-responses": openAIResponsesApi(),
+			"openai-completions": openAICompletionsApi(),
+		},
 	});
 }
 

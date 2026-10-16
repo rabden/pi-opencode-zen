@@ -531,6 +531,16 @@ export function createZenStreamRewriter(): ZenStreamRewriter {
 export function wrapZenSseResponse(response: Response, onUpstreamChunk?: (chunk: Uint8Array) => void): Response {
 	if (response.body === null) return response;
 	const rewriter = createZenStreamRewriter();
+	return wrapSseBody(response, rewriter.feedFrame, onUpstreamChunk);
+}
+
+/** Shared SSE framing: feed each complete frame to `feedFrame`, forward
+ * the rewriter's output frames. */
+function wrapSseBody(
+	response: Response,
+	feedFrame: (frame: string) => string[],
+	onUpstreamChunk?: (chunk: Uint8Array) => void,
+): Response {
 	const decoder = new TextDecoder();
 	const encoder = new TextEncoder();
 	let buffer = "";
@@ -547,7 +557,7 @@ export function wrapZenSseResponse(response: Response, onUpstreamChunk?: (chunk:
 				if (match === null) break;
 				const frame = buffer.slice(0, match.index);
 				buffer = buffer.slice(match.index + match[0].length);
-				for (const out of rewriter.feedFrame(frame)) controller.enqueue(encoder.encode(out));
+				for (const out of feedFrame(frame)) controller.enqueue(encoder.encode(out));
 			}
 		},
 		flush(controller) {
@@ -557,7 +567,7 @@ export function wrapZenSseResponse(response: Response, onUpstreamChunk?: (chunk:
 			// A frame-shaped tail goes through the rewriter; anything else
 			// (e.g. a body that was not SSE after all) is forwarded raw.
 			if (/^(?:event|data|:)\s?/m.test(rest)) {
-				for (const out of rewriter.feedFrame(rest)) controller.enqueue(encoder.encode(out));
+				for (const out of feedFrame(rest)) controller.enqueue(encoder.encode(out));
 			} else {
 				controller.enqueue(encoder.encode(buffer));
 			}
@@ -572,4 +582,435 @@ export function wrapZenSseResponse(response: Response, onUpstreamChunk?: (chunk:
 		statusText: response.statusText,
 		headers,
 	});
+}
+
+// =============================================================================
+// Chat Completions dialect rewriter
+//
+// Chat-native zen models (everything free except muse) are served on
+// /zen/v1/chat/completions. pi-ai speaks that dialect natively when a
+// model is registered with api "openai-completions", so the response
+// only needs the same fence translation in chat-chunk form: cleaned
+// text deltas, native tool_calls chunks for harvested blocks, thinking
+// (reasoning_content) passthrough, usage and [DONE] preserved.
+// =============================================================================
+
+export interface ZenChatRewriter {
+	feedFrame(frame: string): string[];
+}
+
+interface ChatChunk {
+	choices?: Array<{
+		index?: number;
+		finish_reason?: string | null;
+		delta?: {
+			content?: string | null;
+			reasoning_content?: string | null;
+			reasoning?: string | null;
+			[ key: string ]: unknown;
+		};
+	}>;
+	usage?: unknown;
+}
+
+export function createZenChatRewriter(): ZenChatRewriter {
+	const state: ItemTextState = { pending: "", flushed: "", itemId: "msg", outputIndex: 0, finalized: false };
+	const calls: ZenToolCall[] = [];
+	let chunkId = "";
+	let created = 0;
+	let model = "";
+	let finishReason: string | null | undefined;
+	let usageChunk: string | null = null;
+	let finished = false;
+
+	const chunk = (delta: Record<string, unknown>, finish: string | null = null): string => {
+		const choice: Record<string, unknown> = { index: 0, delta, finish_reason: finish };
+		return `data: ${JSON.stringify({
+			id: chunkId || "chatcmpl-zen",
+			object: "chat.completion.chunk",
+			created,
+			model: model || "zen",
+			choices: [choice],
+		})}\n\n`;
+	};
+
+	/** Emit any harvested calls as native tool_calls chunks. */
+	const flushCalls = (): string[] => {
+		if (calls.length === 0) return [];
+		const out: string[] = [];
+		for (const [index, call] of calls.entries()) {
+			out.push(chunk({
+				tool_calls: [{
+					index,
+					id: call.id,
+					type: "function",
+					function: { name: call.name, arguments: call.arguments },
+				}],
+			}));
+		}
+		return out;
+	};
+
+	/** Decide the stream at the first terminal signal. */
+	const finish = (): string[] => {
+		if (finished) return [];
+		finished = true;
+		const out: string[] = [];
+		const extra = pumpText(state, true, calls);
+		if (extra.length > 0) out.push(chunk({ content: extra }));
+		out.push(...flushCalls());
+		const reason = calls.length > 0 ? "tool_calls" : finishReason === undefined || finishReason === null ? "stop" : finishReason;
+		out.push(chunk({}, reason));
+		if (usageChunk !== null) out.push(usageChunk);
+		return out;
+	};
+
+	const feedFrame = (frame: string): string[] => {
+		if (finished) return [`${frame}\n\n`];
+		// Chat streams carry bare `data:` frames (no event: lines).
+		const dataLines: string[] = [];
+		for (const rawLine of frame.split(/\r?\n/)) {
+			const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+			if (line.startsWith(":")) continue;
+			if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+		}
+		if (dataLines.length === 0) return [`${frame}\n\n`];
+		const dataStr = dataLines.join("\n");
+		if (dataStr === "[DONE]") {
+			const out = finish();
+			out.push(`${frame}\n\n`);
+			return out;
+		}
+		let parsed: ChatChunk;
+		try {
+			parsed = JSON.parse(dataStr) as ChatChunk;
+		} catch {
+			return [`${frame}\n\n`];
+		}
+		if (typeof (parsed as { id?: unknown }).id === "string") chunkId = (parsed as { id: string }).id;
+		if (typeof (parsed as { created?: unknown }).created === "number") created = (parsed as { created: number }).created;
+		if (typeof (parsed as { model?: unknown }).model === "string") model = (parsed as { model: string }).model;
+		// Usage arrives on its own empty-choices chunk: hold it until finish.
+		if (parsed.usage !== undefined && (parsed.choices === undefined || parsed.choices.length === 0)) {
+			usageChunk = `${frame}\n\n`;
+			return [];
+		}
+		const choice = parsed.choices?.[0];
+		if (choice === undefined) return [`${frame}\n\n`];
+		const delta = choice.delta ?? {};
+		const out: string[] = [];
+		const outDelta: Record<string, unknown> = {};
+		// Thinking deltas pass through untouched (same chunk may carry text).
+		if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+			outDelta.reasoning_content = delta.reasoning_content;
+		}
+		if (typeof delta.content === "string" && delta.content.length > 0) {
+			state.pending += delta.content;
+			const text = pumpText(state, false, calls);
+			if (text.length > 0) outDelta.content = text;
+		}
+		if (Object.keys(outDelta).length > 0) out.push(chunk(outDelta));
+		// Some upstreams (deepseek) set finish_reason on the final
+		// content-carrying chunk: decide AFTER emitting that delta.
+		if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+			finishReason = choice.finish_reason;
+			out.push(...finish());
+		}
+		return out;
+	};
+
+	return { feedFrame };
+}
+
+/**
+ * Wrap a Zen /chat/completions SSE Response with the chat rewriter.
+ * `onUpstreamChunk` (debug) observes the raw upstream bytes.
+ */
+export function wrapZenChatResponse(response: Response, onUpstreamChunk?: (chunk: Uint8Array) => void): Response {
+	if (response.body === null) return response;
+	const rewriter = createZenChatRewriter();
+	return wrapSseBody(response, rewriter.feedFrame, onUpstreamChunk);
+}
+
+// =============================================================================
+// Cross-dialect translators (automatic protocol fallback)
+//
+// When a model's registered protocol is wrong — new models appear on Zen
+// with no machine-readable endpoint metadata — the upstream answers 400
+// ModelProtocolUnsupported. The fetch patch then retries the OTHER
+// endpoint and pipes the response through one of these translators, so
+// pi-ai's original parser keeps seeing the dialect it expects. The
+// learned protocol is cached per model id, so the 400 round-trip happens
+// at most once per session per model.
+// =============================================================================
+
+/** Parse a bare chat SSE frame; returns the data payload or null. */
+function parseChatFrame(frame: string): Record<string, any> | null {
+	const dataLines: string[] = [];
+	for (const rawLine of frame.split(/\r?\n/)) {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		if (line.startsWith(":")) continue;
+		if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+	}
+	if (dataLines.length === 0) return null;
+	const dataStr = dataLines.join("\n");
+	if (dataStr === "[DONE]") return { __done: true } as Record<string, any>;
+	try {
+		return JSON.parse(dataStr) as Record<string, any>;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Chat Completions chunks in → Responses events out (pi speaks
+ * Responses, the model is chat-native). Synthesizes the full canonical
+ * event sequence: reasoning is not carried (chat reasoning_content has
+ * no Responses summary equivalent worth faking).
+ */
+export function createChatToResponsesRewriter(model: string): { feedFrame(frame: string): string[] } {
+	const state: ItemTextState = { pending: "", flushed: "", itemId: "msg_zen_chat", outputIndex: 0, finalized: false };
+	const calls: ZenToolCall[] = [];
+	let sequence = 0;
+	let responseId = "resp_zen_fallback";
+	let started = false;
+	let textOpen = false;
+	let finished = false;
+	let usage: Record<string, unknown> | undefined;
+	let truncated = false;
+
+	const render = (type: string, data: Record<string, unknown>): string => {
+		data.type = type;
+		data.sequence_number = sequence++;
+		return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+	};
+
+	const ensureTextOpen = (out: string[]): void => {
+		if (!started) {
+			started = true;
+			const response = { id: responseId, status: "in_progress", output: [] };
+			out.push(render("response.created", { response }), render("response.in_progress", { response: { id: responseId } }));
+		}
+		if (!textOpen) {
+			textOpen = true;
+			out.push(
+				render("response.output_item.added", {
+					output_index: 0,
+					item: { id: state.itemId, type: "message", status: "in_progress", role: "assistant", content: [] },
+				}),
+				render("response.content_part.added", {
+					item_id: state.itemId,
+					output_index: 0,
+					content_index: 0,
+					part: { type: "output_text", text: "", annotations: [] },
+				}),
+			);
+		}
+	};
+
+	const finish = (): string[] => {
+		if (finished) return [];
+		finished = true;
+		const out: string[] = [];
+		ensureTextOpen(out);
+		const extra = pumpText(state, true, calls);
+		const text = (state.flushed).trim();
+		out.push(
+			render("response.output_text.delta", { item_id: state.itemId, output_index: 0, content_index: 0, delta: extra }),
+			render("response.output_text.done", { item_id: state.itemId, output_index: 0, content_index: 0, text }),
+			render("response.content_part.done", {
+				item_id: state.itemId,
+				output_index: 0,
+				content_index: 0,
+				part: { type: "output_text", text, annotations: [] },
+			}),
+			render("response.output_item.done", {
+				output_index: 0,
+				item: { id: state.itemId, type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] },
+			}),
+		);
+		let index = 1;
+		for (const call of calls) {
+			out.push(
+				render("response.output_item.added", {
+					output_index: index,
+					item: { id: call.itemId, type: "function_call", status: "in_progress", call_id: call.id, name: call.name, arguments: "" },
+				}),
+				render("response.function_call_arguments.delta", { item_id: call.itemId, output_index: index, delta: call.arguments }),
+				render("response.function_call_arguments.done", { item_id: call.itemId, output_index: index, arguments: call.arguments }),
+				render("response.output_item.done", {
+					output_index: index,
+					item: { id: call.itemId, type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments },
+				}),
+			);
+			index++;
+		}
+		const status = truncated ? "incomplete" : "completed";
+		const output: Record<string, unknown>[] = [];
+		if (text.length > 0) {
+			output.push({ id: state.itemId, type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] });
+		}
+		for (const call of calls) {
+			output.push({ id: call.itemId, type: "function_call", status: "completed", call_id: call.id, name: call.name, arguments: call.arguments });
+		}
+		out.push(
+			render(`response.${status}`, {
+				response: {
+					id: responseId,
+					status,
+					model,
+					output,
+					...(truncated ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+					usage: usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+				},
+			}),
+		);
+		return out;
+	};
+
+	return {
+		feedFrame(frame: string): string[] {
+			if (finished) return [];
+			const parsed = parseChatFrame(frame);
+			if (parsed === null) return [];
+			if (parsed.__done === true) return finish();
+			if (typeof parsed.id === "string" && !started) responseId = `resp_${parsed.id}`;
+			if (parsed.usage !== undefined && (!Array.isArray(parsed.choices) || parsed.choices.length === 0)) {
+				const u = parsed.usage as { prompt_tokens?: number; completion_tokens?: number };
+				usage = { input_tokens: u.prompt_tokens ?? 0, output_tokens: u.completion_tokens ?? 0, total_tokens: (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0) };
+				// Usage arrives AFTER finish_reason in real streams: the
+				// terminal event is emitted here, with usage in hand.
+				return finish();
+			}
+			const choice = parsed.choices?.[0];
+			if (choice === undefined) return [];
+			const out: string[] = [];
+			const delta = choice.delta ?? {};
+			if (typeof delta.content === "string" && delta.content.length > 0) {
+				ensureTextOpen(out);
+				state.pending += delta.content;
+				const text = pumpText(state, false, calls);
+				if (text.length > 0) {
+					out.push(render("response.output_text.delta", { item_id: state.itemId, output_index: 0, content_index: 0, delta: text }));
+				}
+			}
+			if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+				if (choice.finish_reason === "length") truncated = true;
+				// Terminal synthesis waits for the usage chunk (or [DONE]).
+				return out;
+			}
+			return out;
+		},
+	};
+}
+
+/** Parse a Responses SSE frame; returns the (type, data) pair or null. */
+function parseResponsesFrame(frame: string): { type: string; data: Record<string, any> } | null {
+	let eventName = "";
+	const dataLines: string[] = [];
+	for (const rawLine of frame.split(/\r?\n/)) {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		if (line.startsWith(":")) continue;
+		if (line.startsWith("event:")) eventName = line.slice(6).trim();
+		else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+	}
+	if (dataLines.length === 0) return null;
+	try {
+		const data = JSON.parse(dataLines.join("\n")) as Record<string, any>;
+		return { type: eventName || (typeof data.type === "string" ? data.type : ""), data };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Responses events in → Chat Completions chunks out (pi speaks chat, the
+ * model is Responses-native). Same fence translation as the chat
+ * rewriter, with thinking forwarded as reasoning_content.
+ */
+export function createResponsesToChatRewriter(): { feedFrame(frame: string): string[] } {
+	const state: ItemTextState = { pending: "", flushed: "", itemId: "msg", outputIndex: 0, finalized: false };
+	const calls: ZenToolCall[] = [];
+	let chunkId = "chatcmpl-zen";
+	let created = 0;
+	let model = "zen";
+	let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+	let finished = false;
+
+	const chunk = (delta: Record<string, unknown>, finish: string | null = null): string => {
+		return `data: ${JSON.stringify({
+			id: chunkId,
+			object: "chat.completion.chunk",
+			created,
+			model,
+			choices: [{ index: 0, delta, finish_reason: finish }],
+		})}\n\n`;
+	};
+
+	const finish = (): string[] => {
+		if (finished) return [];
+		finished = true;
+		const out: string[] = [];
+		const extra = pumpText(state, true, calls);
+		if (extra.length > 0) out.push(chunk({ content: extra }));
+		for (const [index, call] of calls.entries()) {
+			out.push(chunk({ tool_calls: [{ index, id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }] }));
+		}
+		const reason = calls.length > 0 ? "tool_calls" : "stop";
+		out.push(chunk({}, reason));
+		if (usage !== null) {
+			out.push(`data: ${JSON.stringify({ id: chunkId, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`);
+		}
+		out.push("data: [DONE]\n\n");
+		return out;
+	};
+
+	return {
+		feedFrame(frame: string): string[] {
+			if (finished) return [];
+			const parsed = parseResponsesFrame(frame);
+			if (parsed === null) return [];
+			const { type, data } = parsed;
+			if (typeof data.id === "string" && type === "response.created") chunkId = `chatcmpl-${data.id}`;
+			if (typeof data.model === "string" && model === "zen") model = data.model;
+			if (typeof data.created_at === "number" && created === 0) created = data.created_at;
+			switch (type) {
+				case "response.output_text.delta": {
+					if (typeof data.delta !== "string" || data.delta.length === 0) return [];
+					state.pending += data.delta;
+					const text = pumpText(state, false, calls);
+					if (text.length === 0) return [];
+					return [chunk({ content: text })];
+				}
+				case "response.reasoning_summary_text.delta":
+				case "response.reasoning_text.delta": {
+					if (typeof data.delta !== "string" || data.delta.length === 0) return [];
+					return [chunk({ reasoning_content: data.delta })];
+				}
+				case "response.completed":
+				case "response.incomplete": {
+					const u = data.response?.usage;
+					if (u !== undefined) {
+						usage = {
+							prompt_tokens: u.input_tokens ?? 0,
+							completion_tokens: u.output_tokens ?? 0,
+							total_tokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+						};
+					}
+					return finish();
+				}
+				default:
+					return [];
+			}
+		},
+	};
+}
+
+/** Wrap a Response with a generic frame rewriter. */
+export function wrapWithFrameRewriter(
+	response: Response,
+	feedFrame: (frame: string) => string[],
+	onUpstreamChunk?: (chunk: Uint8Array) => void,
+): Response {
+	return wrapSseBody(response, feedFrame, onUpstreamChunk);
 }

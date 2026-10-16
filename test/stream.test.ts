@@ -615,6 +615,94 @@ test("id-keyed routing survives missing and renumbered output_index (hardening)"
 	assert.equal(pi.output.stopReason, "toolUse");
 });
 
+test("chat rewriter: fenced tool block in chat chunks becomes native tool_calls", async () => {
+	const { wrapZenChatResponse } = await import("../stream.ts");
+	const encoder = new TextEncoder();
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "glm", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	const frames = [
+		mk({ role: "assistant", content: "" }),
+		mk({ content: "Checking.\n```" }),
+		mk({ content: 'tool\n{"name": "bash", "argu' }),
+		mk({ content: 'ments": {"command": "echo hi"}}\n```' }),
+		mk({ content: "\nDone." }),
+		mk({}, "stop"),
+		`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "glm", choices: [], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } })}\n\n`,
+		"data: [DONE]\n\n",
+	].join("");
+	const chunks: Uint8Array[] = [];
+	for (let i = 0; i < frames.length; i += 7) chunks.push(encoder.encode(frames.slice(i, i + 7)));
+	const body = new ReadableStream({ start(c) { for (const ch of chunks) c.enqueue(ch); c.close(); } });
+	const res = wrapZenChatResponse(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+	const out = await res.text();
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	const parsed = out.split("\n\n").filter((f) => Boolean(f) && f !== "data: [DONE]").map((f) => JSON.parse(f.replace(/^data: /, "")));
+	const text = parsed.filter((p) => typeof p.choices?.[0]?.delta?.content === "string").map((p) => p.choices[0].delta.content).join("");
+	assert.equal(text.trim(), "Checking.\n\nDone.");
+	const toolChunks = parsed.filter((p) => Array.isArray(p.choices?.[0]?.delta?.tool_calls));
+	assert.equal(toolChunks.length, 1);
+	assert.equal(toolChunks[0].choices[0].delta.tool_calls[0].function.name, "bash");
+	assert.deepEqual(JSON.parse(toolChunks[0].choices[0].delta.tool_calls[0].function.arguments), { command: "echo hi" });
+	const finish = parsed.find((p) => p.choices?.[0]?.finish_reason !== null && p.choices?.[0]?.finish_reason !== undefined);
+	assert.equal(finish.choices[0].finish_reason, "tool_calls");
+	assert.ok(out.includes('[DONE]'), "[DONE] preserved");
+	assert.ok(parsed.some((p) => p.usage?.total_tokens === 8), "usage preserved");
+});
+
+test("chat rewriter: heredoc command with inner backticks, reasoning passthrough", async () => {
+	const { wrapZenChatResponse } = await import("../stream.ts");
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "c2", object: "chat.completion.chunk", created: 1, model: "deepseek", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	const cmd = "cat <<'EOF'\n```md\n# hi\n```\nEOF";
+	const frames = [
+		mk({ reasoning_content: "Thinking." }),
+		mk({ content: `Writing.\n\`\`\`tool\n${JSON.stringify({ name: "bash", arguments: { command: cmd } })}\n\`\`\`` }),
+		mk({}, "stop"),
+		"data: [DONE]\n\n",
+	].join("");
+	const body = new ReadableStream({ start(c) { c.enqueue(encoder0().encode(frames)); c.close(); } });
+	const res = wrapZenChatResponse(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+	const out = await res.text();
+	assert.ok(out.includes('"reasoning_content":"Thinking."'), "thinking passes through");
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	const parsed = out.split("\n\n").filter((f) => Boolean(f) && f !== "data: [DONE]").map((f) => JSON.parse(f.replace(/^data: /, "")));
+	const call = parsed.find((p) => Array.isArray(p.choices?.[0]?.delta?.tool_calls));
+	assert.equal(call.choices[0].delta.tool_calls[0].function.name, "bash");
+	assert.deepEqual(JSON.parse(call.choices[0].delta.tool_calls[0].function.arguments), { command: cmd });
+});
+
+function encoder0(): TextEncoder {
+	return new TextEncoder();
+}
+
+test("chat rewriter: finish_reason on the final content chunk keeps that content (deepseek shape)", async () => {
+	const { wrapZenChatResponse } = await import("../stream.ts");
+	const cmd = JSON.stringify({ command: "echo tail" });
+	const fence = "```";
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "c4", object: "chat.completion.chunk", created: 1, model: "deepseek", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	// The JSON's last characters arrive on the SAME chunk as finish_reason.
+	// (Plain concatenation: literal braces inside template literals confuse
+	// node's type stripper.)
+	const head = '{"name": "bash", "arguments": ';
+	const frames = [
+		mk({ content: "Run.\n" + fence + "tool\n" + head }),
+		mk({ content: cmd + "}" + "\n" + fence }, "stop"),
+		"data: [DONE]\n\n",
+	].join("");
+	const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frames)); c.close(); } });
+	const res = wrapZenChatResponse(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+	const out = await res.text();
+	assert.ok(!out.includes("```tool"), "no fence leak");
+	const parsed = out.split("\n\n").filter((f) => Boolean(f) && f !== "data: [DONE]").map((f) => JSON.parse(f.replace(/^data: /, "")));
+	const call = parsed.find((p) => Array.isArray(p.choices?.[0]?.delta?.tool_calls));
+	assert.ok(call, "call harvested despite finish on the closing chunk");
+	assert.equal(call.choices[0].delta.tool_calls[0].function.name, "bash");
+	assert.deepEqual(JSON.parse(call.choices[0].delta.tool_calls[0].function.arguments), { command: "echo tail" });
+	const finish = parsed.find((p) => p.choices?.[0]?.finish_reason === "tool_calls");
+	assert.ok(finish, "finish_reason overridden to tool_calls");
+});
+
 test("non-SSE responses are not mangled by the rewriter path (sanity)", async () => {
 	// wrapZenSseResponse is only called for SSE bodies by index.ts; verify it
 	// still behaves when handed a JSON body by mistake: frames without data
@@ -651,5 +739,52 @@ async function main(): Promise<void> {
 	}
 	console.log(`\n${tests.length} tests passed`);
 }
+
+test("chat→responses translator synthesizes a spec-shaped stream with function_call", async () => {
+	const { wrapWithFrameRewriter, createChatToResponsesRewriter } = await import("../stream.ts");
+	const cmd = JSON.stringify({ command: "echo t1" });
+	const fence = "```";
+	const mk = (delta: Record<string, unknown>, finish: string | null = null) =>
+		`data: ${JSON.stringify({ id: "cx", object: "chat.completion.chunk", created: 9, model: "glm", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+	const frames = [
+		mk({ content: "Go.\n" + fence + "tool\n" + '{"name": "bash", "arguments": ' }),
+		mk({ content: cmd + "}" + "\n" + fence }, "stop"),
+		mk({}, null),
+		`data: ${JSON.stringify({ id: "cx", choices: [], usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 } })}\n\n`,
+		"data: [DONE]\n\n",
+	].join("");
+	const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frames)); c.close(); } });
+	const res = wrapWithFrameRewriter(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }), createChatToResponsesRewriter("glm").feedFrame);
+	const out = await res.text();
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	const events = parseEvents(out);
+	// Feed to pi's REAL processor (it speaks Responses).
+	const pi = await runThroughPi(events);
+	const call = pi.output.content.find((b: Record<string, any>) => b.type === "toolCall");
+	assert.ok(call, "function_call synthesized");
+	assert.equal(call.name, "bash");
+	assert.deepEqual(call.arguments, { command: "echo t1" });
+	assert.equal(pi.output.stopReason, "toolUse");
+	assert.equal(pi.output.content.find((b: Record<string, any>) => b.type === "text").text.trim(), "Go.");
+	assert.equal(pi.output.usage.input, 4);
+});
+
+test("responses→chat translator emits clean chunks with tool_calls and usage", async () => {
+	const { wrapWithFrameRewriter, createResponsesToChatRewriter } = await import("../stream.ts");
+	const cmd = JSON.stringify({ command: "echo t2" });
+	const fence = "```";
+	const eventsIn = buildUpstream({ deltas: ["Hi.\n" + fence + "tool\n" + '{"name": "bash", "arguments": ' + cmd + "}" + "\n" + fence] });
+	const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(eventsIn)); c.close(); } });
+	const res = wrapWithFrameRewriter(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }), createResponsesToChatRewriter().feedFrame);
+	const out = await res.text();
+	assert.ok(!out.includes("```tool"), "no fence leaks");
+	assert.ok(out.includes("[DONE]"), "[DONE] emitted");
+	const parsed = out.split("\n\n").filter((f) => Boolean(f) && f !== "data: [DONE]").map((f) => JSON.parse(f.replace(/^data: /, "")));
+	const call = parsed.find((p) => Array.isArray(p.choices?.[0]?.delta?.tool_calls));
+	assert.ok(call, "tool_calls chunk emitted");
+	assert.deepEqual(JSON.parse(call.choices[0].delta.tool_calls[0].function.arguments), { command: "echo t2" });
+	assert.equal(parsed.find((p) => p.choices?.[0]?.finish_reason === "tool_calls") !== undefined, true);
+	assert.equal(parsed.some((p) => p.usage?.total_tokens === 17), true, "usage forwarded");
+});
 
 await main();
