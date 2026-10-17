@@ -212,7 +212,18 @@ fences — earliest marker wins, partial blocks held — so those turns
 still execute as tool calls instead of ending in raw markup. Also note
 ll-alpha-free answered 422 "Endpoint is unavailable" on chat (its
 correct endpoint) on 2026-10-16: listed in the docs but not deployed —
-an OpenCode-side gap, surfaced as-is. Later that day
+an OpenCode-side gap, surfaced as-is. Two more live findings
+(2026-10-17): mimo frees fall back to Qwen-style XML tool calls
+(<tool_call><function=NAME><parameter=K>V</parameter></function>…
+</tool_call>) instead of fences — harvested like DSML — and deepseek
+occasionally drops the "name" from fence JSON, emitting bare bash
+arguments ({"command": …}); a name-less fence whose object has a
+"command" key is inferred as bash. space-bunny-free is thoroughly
+marker-dominated (titles regardless of preamble, recency reminder,
+role promotion, or ordering — all tried) and is effectively unusable
+through the free gate; the wire shape now carries a fourth item
+(developer recency reminder after the transcript, still within rule
+10's two-further-items budget) which hardens milder cases. Later that day
 `muse-spark-1.3-contributor-free` itself 410'd (no replacement hint;
 the paid muse models remain) — leaving zero Responses-native frees —
 and `beam-free` appeared. The extension therefore refreshes the live

@@ -70,6 +70,46 @@ const DSML_CLOSE_RE = new RegExp(`</${DSML_CORE}\\s*calls\\s*>`);
 const DSML_INVOKE_RE = new RegExp(`<${DSML_CORE}\\s*invoke\\s+name="([^"]*)"\\s*>([\\s\\S]*?)</${DSML_CORE}\\s*invoke>`, "g");
 const DSML_PARAM_RE = new RegExp(`<${DSML_CORE}\\s*parameter\\s+name="([^"]*)"[^>]*>([\\s\\S]*?)</${DSML_CORE}\\s*parameter>`, "g");
 
+// Qwen/mimo-style XML tool calls, emitted as text when the model
+// ignores the fence protocol (observed live, mimo-v2.6-flash-free):
+//   <tool_call><function=bash><parameter=command>ls -la</parameter></function></tool_call>
+// Tolerating <function name="bash"> / <parameter name="k"> variants and
+// several back-to-back blocks.
+const XML_CALL_OPEN = "<tool_call>";
+const XML_CALL_CLOSE = "</tool_call>";
+const XML_FN_RE = /<function(?:=(?:"?([^"\s>]+)"?)|\s+name\s*=\s*"([^"\s>]+)")\s*>/g;
+const XML_PARAM_RE = /<parameter(?:=(?:"?([^"\s>]+)"?)|\s+name\s*=\s*"([^"\s>]+)")\s*>([\s\S]*?)<\/parameter>/g;
+
+/** Parse XML tool_call blocks from a region into tool calls. */
+function parseXmlCalls(region: string): Array<{ name: string; arguments: string }> {
+	const calls: Array<{ name: string; arguments: string }> = [];
+	for (const fn of region.matchAll(XML_FN_RE)) {
+		const name = fn[1] ?? fn[2];
+		if (name === undefined || name.length === 0) continue;
+		const fnStart = fn.index + fn[0].length;
+		const fnEnd = region.indexOf("</function>", fnStart);
+		const body = region.slice(fnStart, fnEnd === -1 ? region.length : fnEnd);
+		const args: Record<string, unknown> = {};
+		for (const param of body.matchAll(XML_PARAM_RE)) {
+			const key = param[1] ?? param[2];
+			if (key === undefined || key.length === 0) continue;
+			const raw = param[3];
+			const trimmed = raw.trim();
+			if (/^(?:true|false|-?\d+(?:\.\d+)?)$/.test(trimmed)) {
+				try {
+					args[key] = JSON.parse(trimmed);
+					continue;
+				} catch {
+					// fall through to string
+				}
+			}
+			args[key] = raw;
+		}
+		calls.push({ name, arguments: JSON.stringify(args) });
+	}
+	return calls;
+}
+
 /** Parse one complete DSML block into tool calls (empty when malformed). */
 function parseDsmlBlock(block: string): Array<{ name: string; arguments: string }> {
 	const calls: Array<{ name: string; arguments: string }> = [];
@@ -120,7 +160,17 @@ export function parseToolBlock(payload: string): { name: string; arguments: stri
 	}
 	if (typeof parsed !== "object" || parsed === null) return null;
 	const { name, arguments: args } = parsed as { name?: unknown; arguments?: unknown };
-	if (typeof name !== "string" || name.length === 0) return null;
+	if (typeof name !== "string" || name.length === 0) {
+		// Models occasionally drop the name and emit bare bash arguments
+		// ({"command": "..."}). "command" is the bash tool's signature
+		// argument, and no other built-in takes it — infer bash rather
+		// than losing the turn (observed live, deepseek, 2026-10-17).
+		const fields = parsed as Record<string, unknown>;
+		if ("command" in fields) {
+			return { name: "bash", arguments: JSON.stringify(fields) };
+		}
+		return null;
+	}
 	if (args !== undefined && typeof args !== "object" && typeof args !== "string") return null;
 	return { name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) };
 }
@@ -136,6 +186,15 @@ function safeTail(buffer: string): number {
 		const tail = buffer.slice(buffer.length - hold);
 		if (FENCE_MARKER.startsWith(tail)) return buffer.length - hold;
 		if (/^`+[ \t]*$/.test(tail)) return buffer.length - hold;
+	}
+	// A partial XML opener at the tail ("<tool", "<tool_call", …).
+	const minTool = Math.min(5, buffer.length); // "<tool"
+	for (let hold = Math.min(XML_CALL_OPEN.length, buffer.length); hold >= minTool; hold--) {
+		if (buffer.endsWith(XML_CALL_OPEN.slice(0, hold))) return buffer.length - hold;
+	}
+	// A partial DSML opener at the tail ("<｜", "<｜｜DS", …).
+	for (let hold = Math.min(18, buffer.length); hold >= 2; hold--) {
+		if (buffer.endsWith("<｜｜DSML｜｜ calls>".slice(0, hold))) return buffer.length - hold;
 	}
 	return buffer.length;
 }
@@ -214,12 +273,14 @@ function pumpText(state: ItemTextState, final: boolean, calls: ZenToolCall[]): s
 	for (;;) {
 		const fenceMatch = FENCE_OPEN_RE.exec(state.pending);
 		const dsmlMatch = DSML_OPEN_RE.exec(state.pending);
-		// Earliest marker wins; a fence at 0 or a DSML block at 0 both
-		// start a tool call region.
-		const useDsml =
-			dsmlMatch !== null && (fenceMatch === null || dsmlMatch.index <= fenceMatch.index);
-		const openMatch = useDsml ? dsmlMatch : fenceMatch;
-		if (openMatch === null) {
+		const xmlIndex = state.pending.indexOf(XML_CALL_OPEN);
+		// Earliest marker wins: a ```tool fence, a DSML block, or an XML
+		// <tool_call> block, whichever comes first.
+		const candidates: Array<{ index: number; kind: "fence" | "dsml" | "xml" }> = [];
+		if (fenceMatch !== null) candidates.push({ index: fenceMatch.index, kind: "fence" });
+		if (dsmlMatch !== null) candidates.push({ index: dsmlMatch.index, kind: "dsml" });
+		if (xmlIndex !== -1) candidates.push({ index: xmlIndex, kind: "xml" });
+		if (candidates.length === 0) {
 			// No opener: flush what cannot grow into one.
 			const safe = final ? state.pending.length : safeTail(state.pending);
 			if (safe > 0) {
@@ -229,9 +290,49 @@ function pumpText(state: ItemTextState, final: boolean, calls: ZenToolCall[]): s
 			state.flushed += outText;
 			return outText;
 		}
-		if (openMatch.index > 0) {
-			outText += state.pending.slice(0, openMatch.index);
-			state.pending = state.pending.slice(openMatch.index);
+		candidates.sort((a, b) => a.index - b.index);
+		const winner = candidates[0];
+		const useDsml = winner.kind === "dsml";
+		const useXml = winner.kind === "xml";
+		const openIndex = useXml ? xmlIndex : (useDsml ? dsmlMatch!.index : fenceMatch!.index);
+		if (openIndex > 0) {
+			outText += state.pending.slice(0, openIndex);
+			state.pending = state.pending.slice(openIndex);
+		}
+		if (useXml) {
+			const closeIndex = state.pending.indexOf(XML_CALL_CLOSE, XML_CALL_OPEN.length);
+			if (closeIndex === -1) {
+				// Incomplete XML block: hold; the final flush decides.
+				if (final) {
+					outText += state.pending;
+					state.pending = "";
+				}
+				state.flushed += outText;
+				return outText;
+			}
+			// Consume through the closer; harvest every call in the region
+			// (models emit several <tool_call> blocks back to back).
+			let regionEnd = closeIndex + XML_CALL_CLOSE.length;
+			for (;;) {
+				const next = state.pending.indexOf(XML_CALL_OPEN, regionEnd);
+				const nextClose = next === -1 ? -1 : state.pending.indexOf(XML_CALL_CLOSE, next + XML_CALL_OPEN.length);
+				// Only swallow adjacent blocks (nothing but whitespace between).
+				if (next === -1 || nextClose === -1 || state.pending.slice(regionEnd, next).trim().length > 0) break;
+				regionEnd = nextClose + XML_CALL_CLOSE.length;
+			}
+			const region = state.pending.slice(0, regionEnd);
+			const xmlCalls = parseXmlCalls(region);
+			if (xmlCalls.length > 0) {
+				for (const call of xmlCalls) {
+					const ids = mintToolCallIds();
+					calls.push({ ...ids, ...call });
+				}
+			} else {
+				// Not parseable: keep it visible as text.
+				outText += region;
+			}
+			state.pending = state.pending.slice(regionEnd);
+			continue;
 		}
 		if (useDsml) {
 			const closeMatch = DSML_CLOSE_RE.exec(state.pending);
@@ -259,7 +360,7 @@ function pumpText(state: ItemTextState, final: boolean, calls: ZenToolCall[]): s
 			state.pending = state.pending.slice(end);
 			continue;
 		}
-		const scanned = scanToolBlock(state.pending, openMatch[0].length);
+		const scanned = scanToolBlock(state.pending, fenceMatch![0].length);
 		if (scanned === null) {
 			// Incomplete block or prose: hold everything from the
 			// opener; the final flush decides (unclosed/malformed

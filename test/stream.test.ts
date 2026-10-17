@@ -753,6 +753,42 @@ test("DSML streamed through chat chunks reaches pi as native toolCalls", async (
 	assert.equal(parsed.find((p) => p.choices?.[0]?.finish_reason === "tool_calls") !== undefined, true);
 });
 
+test("mimo XML tool_call blocks become native calls (session regression)", async () => {
+	// Captured verbatim from session 01a147db: mimo ignored the fence
+	// protocol and emitted Qwen-style XML tool calls as text.
+	const { harvestToolBlocks } = await import("../stream.ts");
+	const xml =
+		"<tool_call><function=bash><parameter=command>ls -la /disk2/desktop/extensions-A</parameter></function></tool_call>" +
+		"<tool_call><function=bash><parameter=command>find /disk2/desktop/extensions-A -maxdepth 2 | head -100</parameter></function></tool_call>";
+	const { cleanedText, calls } = harvestToolBlocks(xml);
+	assert.equal(calls.length, 2, "both XML calls harvested");
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: "ls -la /disk2/desktop/extensions-A" });
+	assert.deepEqual(JSON.parse(calls[1].arguments), { command: "find /disk2/desktop/extensions-A -maxdepth 2 | head -100" });
+	assert.equal(cleanedText.trim(), "");
+	// name= attribute variant parses too
+	const variant = harvestToolBlocks('<tool_call><function name="read"><parameter name="path">/tmp/x</parameter></function></tool_call>');
+	assert.equal(variant.calls.length, 1);
+	assert.equal(variant.calls[0].name, "read");
+	assert.deepEqual(JSON.parse(variant.calls[0].arguments), { path: "/tmp/x" });
+	// Prose mentioning tool_call stays untouched.
+	const prose = harvestToolBlocks("Qwen uses <tool_call> tags in some setups.");
+	assert.equal(prose.calls.length, 0);
+});
+
+test("name-less fence JSON with a command key infers bash (session regression)", async () => {
+	// Captured from session 01a147dc: deepseek emitted ```tool fences
+	// whose JSON was bare bash arguments with no "name".
+	const fence = "```";
+	const text = "Plan.\n" + fence + "tool\n" + '{"command":"cd /disk2/desktop/extensions-A && sha256sum README.md && wc -l README.md"}' + "\n" + fence;
+	const { harvestToolBlocks } = await import("../stream.ts");
+	const { cleanedText, calls } = harvestToolBlocks(text);
+	assert.equal(calls.length, 1, "name-less command fence harvested as bash");
+	assert.equal(calls[0].name, "bash");
+	assert.deepEqual(JSON.parse(calls[0].arguments), { command: "cd /disk2/desktop/extensions-A && sha256sum README.md && wc -l README.md" });
+	assert.equal(cleanedText.trim(), "Plan.");
+});
+
 test("non-SSE responses are not mangled by the rewriter path (sanity)", async () => {
 	// wrapZenSseResponse is only called for SSE bodies by index.ts; verify it
 	// still behaves when handed a JSON body by mistake: frames without data
