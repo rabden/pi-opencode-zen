@@ -73,23 +73,20 @@ const MODELS_URL = `${BASE_URL}/models`;
 // The gate validates the UA string; keep in sync with current releases.
 const ZEN_USER_AGENT = "opencode/1.19.0 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14";
 
-// Fallback catalog used before the first successful /models refresh:
-// muse (Responses) plus the chat-native frees (verified live + v2 docs
-// 2026-10-16; big-pickle is free per the pricing table). The live
-// catalog refresh replaces this list.
+// Fallback catalog used before the first successful /models refresh —
+// one model per protocol. The catalog drifts fast (muse-spark-1.3-
+// contributor-free, the last Responses-native free, was deprecated
+// 2026-10-16 with every current free served on chat/completions), and
+// the session-start refresh replaces this list with the live one.
 const FALLBACK_MODEL_IDS = [
-	"muse-spark-1.3-contributor-free",
 	"glm-5.3-flash-free",
 	"deepseek-v4.1-flash-free",
+	"beam-free",
 	"space-bunny-free",
-	"cat-jam-free",
-	"ll-alpha-free",
 	"longcat-2.5-preview-free",
 	"mimo-v2.6-flash-free",
-	"nemotron-3-ultra-free",
 	"nemotron-3.5-lightning-free",
 	"nemotron-3.5-super-vl-free",
-	"big-pickle",
 ];
 
 /** Resolve model metadata: exact id first, then the paid sibling when the
@@ -856,6 +853,15 @@ export function createOpencodeZenCustomProvider(): Provider<"openai-responses"> 
 		},
 		models: FALLBACK_MODEL_IDS.map(toChatModel) as Model<"openai-responses">[],
 		fetchModels: async (context: RefreshModelsContext) => {
+			// Offline/cache-only phase (pi startup): serve the stored
+			// catalog without touching the network.
+			if (context.allowNetwork === false) {
+				const stored = context.stored?.models;
+				if (Array.isArray(stored) && stored.length > 0) {
+					return stored as unknown as Model<"openai-responses">[];
+				}
+				return FALLBACK_MODEL_IDS.map(toChatModel) as Model<"openai-responses">[];
+			}
 			if (context.credential?.type !== "api_key" || !context.credential.key) {
 				return FALLBACK_MODEL_IDS.map(toChatModel) as Model<"openai-responses">[];
 			}
@@ -876,6 +882,28 @@ export function createOpencodeZenCustomProvider(): Provider<"openai-responses"> 
 export default function (pi: ExtensionAPI): void {
 	installFetchPatch();
 	pi.registerProvider(createOpencodeZenCustomProvider());
+
+	// The zen catalog changes constantly (models added, deprecated,
+	// re-homed between endpoints), and pi only restores the cached
+	// catalog at startup — so pull a fresh list once per app run, right
+	// after the session starts. Throttled so rapid /new cycles in one
+	// long-running app do not hammer the open /models endpoint.
+	let lastCatalogRefresh = 0;
+	pi.on("session_start", (_event, ctx) => {
+		const now = Date.now();
+		if (now - lastCatalogRefresh < 10 * 60 * 1000) return;
+		lastCatalogRefresh = now;
+		void ctx.modelRegistry
+			.refresh({ providers: [PROVIDER_ID], force: true })
+			.then((result) => {
+				if (result.errors.size > 0 && DEBUG) {
+					debugLog("session catalog refresh reported errors", String([...result.errors.keys()]));
+				}
+			})
+			.catch((error) => {
+				if (DEBUG) debugLog("session catalog refresh failed", String(error));
+			});
+	});
 
 	// Free-tier gate: any non-official tool declaration is rejected, so tool
 	// calling runs through the text protocol while a zen model is active.
